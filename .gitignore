@@ -1,0 +1,16 @@
+# private files 
+.adsenv/
+
+# build files
+build/
+*.o
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+
+# temporary files
+*.bak
+*.swp
