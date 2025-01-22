@@ -56,8 +56,7 @@ SYSTEM_MSG="You are a professional of Computer Science."
 ## How to install Ask-DeepSeek?
 
 ## TODO
-- [ ] Resolve bugs in output animation.
-- [ ] Add functionality to use the stream parameter in the API.
+- [*] Resolve bugs in output animation.
+- [*] Add functionality to use the stream parameter in the API.
 - [ ] Support providing more configurations in the. adsenv file.
-- [ ] Enhance the response and handling of errors, and present error information as comprehensively as possible, while also ensuring readability. If the code is incorrect, the return value will be the error value of HTTP.
 - [ ] Split a single file in the project into different files to increase readability and maintainability.
