@@ -1,7 +1,7 @@
 /* 
  * Ask-DeepSeek - DeepSeek 大模型的命令行接口工具
  * 基于 libcurl 和 cJSON 库实现 API 通信
- * 遵循 GPL-3.0 许可证发行
+ * 遵循 MIT 许可证发行
  */
 
 /* 系统头文件 */
@@ -206,19 +206,19 @@ void free_configuration(api_config_t *config)
 const char *locate_config_file(void)
 {
     static const char *config_search_paths[] = {
-        "./.deepseekrc",          // 当前目录
+        "./.adsenv",          // 当前目录
         NULL,                     // 用户目录
         NULL,                     // 用户配置目录
-        "/etc/deepseek/config"    // 系统级配置
+        "/etc/ads/.adsenv"    // 系统级配置
     };
 
     const char *home_dir = getenv("HOME");
     if (home_dir) {
         static char user_config_path[PATH_MAX];
         static char xdg_config_path[PATH_MAX];
-        snprintf(user_config_path, sizeof(user_config_path), "%s/.deepseekrc", home_dir);
+        snprintf(user_config_path, sizeof(user_config_path), "%s/.adsenv", home_dir);
         snprintf(xdg_config_path, sizeof(xdg_config_path), 
-                "%s/.config/deepseek/config", home_dir);
+                "%s/.config/.adsenv", home_dir);
         config_search_paths[1] = user_config_path;
         config_search_paths[2] = xdg_config_path;
     }
@@ -265,21 +265,24 @@ void dump_configuration_json(const api_config_t *config)
 /**
  * @brief libcurl 写回调函数，用于接收HTTP响应数据
  */
-static size_t curl_write_callback(void *data_chunk, size_t element_size,
-                                 size_t element_count, void *user_buffer)
+static size_t curl_data_writer(char *buffer, size_t element_size,
+                              size_t element_count, void *user_buffer)
 {
     size_t data_size = element_size * element_count;
     http_response_t *response_buffer = (http_response_t *)user_buffer;
 
-    char *new_buffer = realloc(response_buffer->payload, response_buffer->payload_size + data_size + 1);
+    char *new_buffer = realloc(response_buffer->payload, 
+                              response_buffer->payload_size + data_size + 1);
     if (!new_buffer) return 0;
 
     response_buffer->payload = new_buffer;
-    memcpy(&response_buffer->payload[response_buffer->payload_size], data_chunk, data_size);
+    memcpy(&response_buffer->payload[response_buffer->payload_size], 
+          buffer, data_size);
     response_buffer->payload_size += data_size;
     response_buffer->payload[response_buffer->payload_size] = '\0';
     return data_size;
 }
+
 
 /**
  * @brief 执行HTTP POST请求
@@ -299,17 +302,20 @@ static CURLcode perform_http_post(const char *url, const char *auth_header,
     header_list = curl_slist_append(header_list, "Content-Type: application/json");
     header_list = curl_slist_append(header_list, auth_header);
 
+    /* 设置 CURL 选项时添加显式类型转换 */
     curl_easy_setopt(curl_handle, CURLOPT_URL, url);
     curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, header_list);
     curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, payload);
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, curl_write_callback);
+    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, 
+                    (curl_write_callback)curl_data_writer);  // 关键修改点
     curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, response);
     curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "deepseek-cli/1.0");
     curl_easy_setopt(curl_handle, CURLOPT_TIMEOUT, 30L);
 
     CURLcode result = curl_easy_perform(curl_handle);
     if (result == CURLE_OK) {
-        curl_easy_getinfo(curl_handle, CURLINFO_RESPONSE_CODE, &response->status_code);
+        curl_easy_getinfo(curl_handle, CURLINFO_RESPONSE_CODE, 
+                         &response->status_code);
     }
     
     curl_slist_free_all(header_list);
