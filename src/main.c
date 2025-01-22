@@ -7,7 +7,6 @@
 #include <limits.h>
 #include <ctype.h>
 #include <getopt.h>
-#include <time.h>
 
 /* 配置常量 */
 #ifndef PATH_MAX
@@ -45,6 +44,7 @@ typedef struct {
 typedef struct {
     char* memory;
     size_t size;
+    long status_code;
 } CurlResponse;
 
 /* 函数声明 - 配置模块 */
@@ -63,7 +63,7 @@ static CURLcode http_post(const char* url, const char* auth_header,
 static char* build_request_json(const ApiConfig* config, const ChatParams* params);
 
 /* 函数声明 - 工具模块 */
-void print_slowly(const char* text, int max_delay);
+void print_slowly(const char* text);  // 修改函数签名
 void trim_whitespace(char* str);
 
 //------------------------ 配置模块实现 ------------------------//
@@ -72,12 +72,19 @@ ApiConfig* config_load(const char* config_path) {
     if (!fp) return NULL;
 
     ApiConfig* config = calloc(1, sizeof(ApiConfig));
+    if (!config) {
+        fclose(fp);
+        return NULL;
+    }
+
+    if (!(config->model = strdup(DEFAULT_MODEL)) ||
+        !(config->system_msg = strdup(DEFAULT_SYSTEM_MSG))) {
+        config_free(config);
+        fclose(fp);
+        return NULL;
+    }
+
     char line[256];
-
-    // 设置默认值
-    config->model = strdup(DEFAULT_MODEL);
-    config->system_msg = strdup(DEFAULT_SYSTEM_MSG);
-
     while (fgets(line, sizeof(line), fp)) {
         char* comment = strchr(line, '#');
         if (comment) *comment = '\0';
@@ -93,16 +100,21 @@ ApiConfig* config_load(const char* config_path) {
         trim_whitespace(key);
         trim_whitespace(value);
 
-        if (strcmp(key, "API_KEY") == 0) {
-            config->api_key = strdup(value);
-        } else if (strcmp(key, "BASE_URL") == 0) {
-            config->base_url = strdup(value);
-        } else if (strcmp(key, "MODEL") == 0) {
-            free(config->model);
-            config->model = strdup(value);
-        } else if (strcmp(key, "SYSTEM_MSG") == 0) {
-            free(config->system_msg);
-            config->system_msg = strdup(value);
+        char** target = NULL;
+        if (strcmp(key, "API_KEY") == 0) target = &config->api_key;
+        else if (strcmp(key, "BASE_URL") == 0) target = &config->base_url;
+        else if (strcmp(key, "MODEL") == 0) target = &config->model;
+        else if (strcmp(key, "SYSTEM_MSG") == 0) target = &config->system_msg;
+
+        if (target) {
+            char* new_value = strdup(value);
+            if (!new_value) {
+                config_free(config);
+                fclose(fp);
+                return NULL;
+            }
+            free(*target);
+            *target = new_value;
         }
     }
 
@@ -137,10 +149,7 @@ const char* config_find_file() {
         search_paths[2] = path2;
     }
 
-    size_t path_len = sizeof(search_paths) / sizeof(search_paths[0]);
-
-
-    for (int i = 0; i < path_len; ++i) {
+    for (size_t i = 0; i < sizeof(search_paths)/sizeof(search_paths[0]); ++i) {
         if (search_paths[i] && access(search_paths[i], R_OK) == 0) {
             return search_paths[i];
         }
@@ -199,8 +208,12 @@ static CURLcode http_post(const char* url, const char* auth_header,
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "libcurl-agent/1.0");
 
     CURLcode res = curl_easy_perform(curl);
+    if (res == CURLE_OK) {
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response->status_code);
+    }
     
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
@@ -209,10 +222,16 @@ static CURLcode http_post(const char* url, const char* auth_header,
 
 static char* build_request_json(const ApiConfig* config, const ChatParams* params) {
     cJSON* root = cJSON_CreateObject();
+    if (!root) return NULL;
+
     cJSON_AddStringToObject(root, "model", config->model);
 
     cJSON* messages = cJSON_AddArrayToObject(root, "messages");
-    
+    if (!messages) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+
     cJSON* system_msg = cJSON_CreateObject();
     cJSON_AddStringToObject(system_msg, "role", "system");
     cJSON_AddStringToObject(system_msg, "content", 
@@ -237,7 +256,12 @@ CurlResponse* send_chat_request_with_payload(const ApiConfig* config, const char
     if (!response) return NULL;
 
     char auth_header[256];
-    snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", config->api_key);
+    int needed = snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", config->api_key);
+    if (needed >= (int)sizeof(auth_header)) {
+        fprintf(stderr, "Authorization header truncated\n");
+        free(response);
+        return NULL;
+    }
 
     CURLcode res = http_post(config->base_url, auth_header, payload, response);
 
@@ -247,6 +271,14 @@ CurlResponse* send_chat_request_with_payload(const ApiConfig* config, const char
         free(response);
         return NULL;
     }
+
+    if (response->status_code != 200) {
+        fprintf(stderr, "HTTP error %ld: %s\n", response->status_code, response->memory ? response->memory : "No response body");
+        free(response->memory);
+        free(response);
+        return NULL;
+    }
+
     return response;
 }
 
@@ -254,17 +286,43 @@ ChatResponse* handle_chat_response(const CurlResponse* curl_res) {
     if (!curl_res || !curl_res->memory) return NULL;
 
     cJSON* root = cJSON_Parse(curl_res->memory);
-    if (!root) return NULL;
+    if (!root) {
+        fprintf(stderr, "Failed to parse JSON response\n");
+        return NULL;
+    }
+
+    cJSON* error = cJSON_GetObjectItem(root, "error");
+    if (error) {
+        cJSON* msg = cJSON_GetObjectItem(error, "message");
+        fprintf(stderr, "API Error: %s\n", cJSON_IsString(msg) ? msg->valuestring : "Unknown error");
+        cJSON_Delete(root);
+        return NULL;
+    }
 
     ChatResponse* response = calloc(1, sizeof(ChatResponse));
-    
+    if (!response) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+
     cJSON* choices = cJSON_GetObjectItem(root, "choices");
-    if (cJSON_IsArray(choices) && cJSON_GetArraySize(choices) > 0) {
-        cJSON* message = cJSON_GetObjectItem(cJSON_GetArrayItem(choices, 0), "message");
-        cJSON* content = cJSON_GetObjectItem(message, "content");
-        if (cJSON_IsString(content)) {
-            response->content = strdup(content->valuestring);
-        }
+    if (!cJSON_IsArray(choices) || cJSON_GetArraySize(choices) == 0) {
+        fprintf(stderr, "Invalid choices array\n");
+        goto error;
+    }
+
+    cJSON* first_choice = cJSON_GetArrayItem(choices, 0);
+    cJSON* message = cJSON_GetObjectItem(first_choice, "message");
+    cJSON* content = cJSON_GetObjectItem(message, "content");
+    if (!cJSON_IsString(content)) {
+        fprintf(stderr, "Invalid content format\n");
+        goto error;
+    }
+
+    response->content = strdup(content->valuestring);
+    if (!response->content) {
+        fprintf(stderr, "Memory allocation failed\n");
+        goto error;
     }
 
     cJSON* usage = cJSON_GetObjectItem(root, "usage");
@@ -276,19 +334,17 @@ ChatResponse* handle_chat_response(const CurlResponse* curl_res) {
 
     cJSON_Delete(root);
     return response;
+
+error:
+    cJSON_Delete(root);
+    free(response);
+    return NULL;
 }
 
 //------------------------ 工具模块实现 ------------------------//
-void print_slowly(const char* text, int max_delay) {
-    for (size_t i = 0; text[i]; ++i) {
-        putchar(text[i]);
-        fflush(stdout);
-        if (max_delay > 0) {
-            useconds_t delay = (useconds_t)(rand() % (max_delay + 1));
-            usleep(delay);
-        }
-    }
-    putchar('\n');
+void print_slowly(const char* text) {  // 直接输出完整文本
+    printf("%s\n", text);
+    fflush(stdout);
 }
 
 void trim_whitespace(char* str) {
@@ -303,17 +359,13 @@ void trim_whitespace(char* str) {
 
 //------------------------ 主程序 ------------------------//
 int main(int argc, char** argv) {
-    srand(time(NULL)); // 初始化随机数生成器
-
     int print_env_flag = 0;
     int count_token_flag = 0;
     int echo_flag = 0;
     int just_json_flag = 0;
-    int max_delay = 50000; // 默认随机延迟最大值
     int opt;
     
     static struct option long_options[] = {
-        {"non-animation", optional_argument, 0, 'a'},
         {"print-env", no_argument, 0, 'p'},
         {"just-json", no_argument, 0, 'j'},
         {"count-token", no_argument, 0, 'c'},
@@ -321,21 +373,8 @@ int main(int argc, char** argv) {
         {0, 0, 0, 0}
     };
 
-    while ((opt = getopt_long(argc, argv, "a::pjc:e", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "pjc:e", long_options, NULL)) != -1) {
         switch (opt) {
-            case 'a':
-                if (optarg) {
-                    char *endptr;
-                    long int val = strtol(optarg, &endptr, 10);
-                    if (endptr == optarg || *endptr != '\0' || val < 0 || val > INT_MAX) {
-                        fprintf(stderr, "Invalid delay value: %s\n", optarg);
-                        return EXIT_FAILURE;
-                    }
-                    max_delay = (int)val;
-                } else {
-                    max_delay = 0; // 关闭动画
-                }
-                break;
             case 'p':
                 print_env_flag = 1;
                 break;
@@ -349,22 +388,21 @@ int main(int argc, char** argv) {
                 echo_flag = 1;
                 break;
             default:
-                fprintf(stderr, "Usage: %s [-a [max_delay]] [-p] [-j] [-c] [-e] \"<your question>\"\n", argv[0]);
+                fprintf(stderr, "Usage: %s [-p] [-j] [-c] [-e] \"<question>\"\n", argv[0]);
                 return EXIT_FAILURE;
         }
     }
 
-    /* 处理打印环境配置请求 */
     if (print_env_flag) {
         const char* config_path = config_find_file();
         if (!config_path) {
-            fprintf(stderr, "Error: No valid config file found\n");
+            fprintf(stderr, "No config file found\n");
             return EXIT_FAILURE;
         }
 
         ApiConfig* config = config_load(config_path);
         if (!config) {
-            fprintf(stderr, "Error: Invalid configuration\n");
+            fprintf(stderr, "Invalid config\n");
             return EXIT_FAILURE;
         }
 
@@ -373,48 +411,41 @@ int main(int argc, char** argv) {
         return EXIT_SUCCESS;
     }
 
-    /* 检查剩余参数 */
     if (optind >= argc) {
-        fprintf(stderr, "Error: Missing user question\n");
-        fprintf(stderr, "Usage: %s [-a [max_delay]] [-p] [-j] [-c] [-e] \"<your question>\"\n", argv[0]);
+        fprintf(stderr, "Missing question\n");
         return EXIT_FAILURE;
     }
     char* user_question = argv[optind];
 
-    /* 初始化配置 */
     const char* config_path = config_find_file();
     if (!config_path) {
-        fprintf(stderr, "Error: No valid config file found\n");
+        fprintf(stderr, "No config file found\n");
         return EXIT_FAILURE;
     }
 
     ApiConfig* config = config_load(config_path);
     if (!config || !config->api_key || !config->base_url) {
-        fprintf(stderr, "Error: Invalid configuration\n");
+        fprintf(stderr, "Invalid configuration\n");
         config_free(config);
         return EXIT_FAILURE;
     }
 
-    /* 处理输入回显 */
     if (echo_flag) {
         printf("\nInput: %s\n", user_question);
     }
 
-    /* 准备请求参数 */
     ChatParams params = {
         .user_message = user_question,
         .system_message = NULL
     };
 
-    /* 构建请求JSON */
     char* payload = build_request_json(config, &params);
     if (!payload) {
-        fprintf(stderr, "Error: Failed to build request JSON\n");
+        fprintf(stderr, "Failed to create payload\n");
         config_free(config);
         return EXIT_FAILURE;
     }
 
-    /* 处理仅打印JSON请求的情况 */
     if (just_json_flag) {
         printf("%s\n", payload);
         free(payload);
@@ -422,31 +453,26 @@ int main(int argc, char** argv) {
         return EXIT_SUCCESS;
     }
 
-    /* 发送并处理请求 */
     CurlResponse* curl_res = send_chat_request_with_payload(config, payload);
     free(payload);
-
     if (!curl_res) {
         config_free(config);
         return EXIT_FAILURE;
     }
 
     ChatResponse* response = handle_chat_response(curl_res);
-    
-    /* 处理响应 */
     if (response && response->content) {
         printf("\nAnswer: ");
-        print_slowly(response->content, max_delay);
+        print_slowly(response->content);
         
         if (count_token_flag) {
             printf("\nToken Usage:\n  Prompt: %d\n  Completion: %d\n  Total: %d\n",
                 response->prompt_tokens, response->completion_tokens, response->total_tokens);
         }
     } else {
-        fprintf(stderr, "Error: Invalid API response\n");
+        fprintf(stderr, "Invalid response\n");
     }
 
-    /* 清理资源 */
     free(curl_res->memory);
     free(curl_res);
     free(response->content);
