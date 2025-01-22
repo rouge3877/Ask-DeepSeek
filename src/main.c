@@ -1,10 +1,15 @@
-/* 
- * Ask-DeepSeek - DeepSeek 大模型的命令行接口工具
- * 基于 libcurl 和 cJSON 库实现 API 通信
- * 遵循 MIT 许可证发行
+/**
+ * @file main.c
+ * @brief DeepSeek CLI main program
+ * @note Ask-DeepSeek - Command-line interface tool for the DeepSeek large language model
+ * @note This program uses the libcurl and cJSON libraries for API communication
+ * @note Distributed under the MIT license
+ * @author Rouge Lin
+ * @date 2025-01-23
  */
 
-/* 系统头文件 */
+
+/* System header files */
 #include <ctype.h>
 #include <getopt.h>
 #include <limits.h>
@@ -14,119 +19,150 @@
 #include <time.h>
 #include <unistd.h>
 
-/* 第三方库头文件 */
+/* Third-party library headers */
 #include <curl/curl.h>
 #include <cjson/cJSON.h>
 
-/* 配置常量 */
+/* Configuration constants */
+/**
+ * @def PATH_MAX
+ * @brief Maximum file path length
+ * @note If the PATH_MAX macro is not defined, set it to 4096
+ */
 #ifndef PATH_MAX
-# define PATH_MAX 4096                /* 最大文件路径长度 */
+# define PATH_MAX 4096                /* Maximum file path length */
 #endif
 
+/**
+ * @def DEFAULT_MODEL
+ * @brief Default model name
+ * @note If the DEFAULT_MODEL macro is not defined, set it to "deepseek-chat"
+ */
 #ifndef DEFAULT_MODEL
-# define DEFAULT_MODEL "deepseek-chat" /* 默认模型名称 */
+# define DEFAULT_MODEL "deepseek-chat" /* Default model name */
 #endif
 
+/**
+ * @def DEFAULT_SYSTEM_PROMPT
+ * @brief Default system prompt
+ * @note If the DEFAULT_SYSTEM_PROMPT macro is not defined, set it to "You are a helpful assistant."
+ */
 #ifndef DEFAULT_SYSTEM_PROMPT
-# define DEFAULT_SYSTEM_PROMPT "You are a helpful assistant." /* 默认系统提示词 */
+# define DEFAULT_SYSTEM_PROMPT "You are a helpful assistant." /* Default system prompt */
 #endif
 
-/* 类型定义 */
+/* Type definitions */
 
 /**
  * @struct api_config_t
- * @brief 存储API配置参数的结构体
+ * @brief Structure that stores API configuration parameters
+ * @var api_key API access key
+ * @var base_url Base URL of the API endpoint
+ * @var model_name Name of the model to use
+ * @var system_prompt System-level prompt information
  */
 typedef struct {
-    char *api_key;       /**< API访问密钥 */
-    char *base_url;      /**< API端点基础URL */
-    char *model_name;    /**< 使用的模型名称 */
-    char *system_prompt; /**< 系统级提示信息 */
+    char *api_key;       /**< API access key */
+    char *base_url;      /**< Base URL of the API endpoint */
+    char *model_name;    /**< Name of the model to use */
+    char *system_prompt; /**< System-level prompt information */
 } api_config_t;
 
 /**
  * @struct chat_request_params_t
- * @brief 聊天请求参数结构体
+ * @brief Structure for chat request parameters
+ * @var user_query User input query content
+ * @var custom_prompt Custom system prompt (optional)
  */
 typedef struct {
-    char *user_query;    /**< 用户输入的查询内容 */
-    char *custom_prompt; /**< 自定义系统提示（可选） */
+    char *user_query;    /**< User input query content */
+    char *custom_prompt; /**< Custom system prompt (optional) */
 } chat_request_params_t;
 
 /**
  * @struct chat_response_t
- * @brief 解析后的聊天响应结构体
+ * @brief Structure for parsed chat response
+ * @var content Generated response content
+ * @var input_token_count Input token count
+ * @var output_token_count Output token count
+ * @var total_token_count Total token count
  */
 typedef struct {
-    char *content;           /**< 生成的响应内容 */
-    int input_token_count;   /**< 输入令牌计数 */
-    int output_token_count;  /**< 输出令牌计数 */
-    int total_token_count;   /**< 总令牌计数 */
+    char *content;           /**< Generated response content */
+    int input_token_count;   /**< Input token count */
+    int output_token_count;  /**< Output token count */
+    int total_token_count;   /**< Total token count */
 } chat_response_t;
 
 /**
  * @struct http_response_t
- * @brief HTTP响应数据容器
+ * @brief HTTP response data container
+ * @var payload Response body data
+ * @var payload_size Response body size
+ * @var status_code HTTP status code
  */
 typedef struct {
-    char *payload;       /**< 响应体数据 */
-    size_t payload_size; /**< 响应体大小 */
-    long status_code;    /**< HTTP状态码 */
+    char *payload;       /**< Response body data */
+    size_t payload_size; /**< Response body size */
+    long status_code;    /**< HTTP status code */
 } http_response_t;
 
 /**
  * @struct stream_context_t
- * @brief 流式输出处理上下文
+ * @brief Context for handling streaming output
+ * @var buffer Data buffer
+ * @var buffer_len Current buffer length
+ * @var show_tokens Whether to show token statistics
  */
 typedef struct {
-    char buffer[4096];   /**< 数据缓冲区 */
-    size_t buffer_len;   /**< 当前缓冲区长度 */
-    int show_tokens;     /**< 是否显示令牌统计 */
+    char buffer[4096];   /**< Data buffer */
+    size_t buffer_len;   /**< Current buffer length */
+    int show_tokens;     /**< Whether to show token statistics */
 } stream_context_t;
 
-/*------------------------ 函数声明 ------------------------*/
+/*------------------------ Function Declarations ------------------------*/
 
-/* 配置管理模块 */
+/* Configuration management module */
 api_config_t *load_configuration(const char *config_path);
 void free_configuration(api_config_t *config);
 const char *locate_config_file(void);
 void dump_configuration_json(const api_config_t *config);
 
-/* API请求处理模块 */
+/* API request handling module */
 http_response_t *execute_chat_request(const api_config_t *config, const char *request_json);
 int execute_streaming_request(const api_config_t *config, const char *request_json, int show_tokens);
 chat_response_t *parse_chat_response(const http_response_t *http_res);
 
-/* HTTP通信模块 */
+/* HTTP communication module */
 static CURLcode perform_http_post(const char *url, const char *auth_header,
                                   const char *payload, http_response_t *response);
 static char *construct_request_json(const api_config_t *config, 
                                    const chat_request_params_t *params,
                                    int stream);
 
-/* 流式处理模块 */
+/* Streaming module */
 static size_t stream_data_callback(char *ptr, size_t size, size_t nmemb, void *userdata);
 static void process_stream_data(stream_context_t *ctx);
 
-/* 工具函数模块 */
+/* Utility functions */
 void stream_output(const char *text_buffer);
 void trim_whitespace(char *string_buffer);
 
-/* 内存安全宏 */
+/* Memory safety macro */
 #define SAFE_FREE(ptr) do { free(ptr); (ptr) = NULL; } while(0)
 
-/*------------------------ 配置管理模块实现 ------------------------*/
+/*------------------------ Configuration management module implementation ------------------------*/
 
 /**
- * @brief Load configuration from file、
- * @param config_path 配置文件路径
- * @return 配置参数结构体指针
- * @note 配置文件格式为键值对，支持以下键：
- *      - API_KEY: DeepSeek API访问密钥
- *      - BASE_URL: DeepSeek API端点基础URL
- *      - MODEL: 使用的模型名称
- *      - SYSTEM_PROMPT: 系统级提示信息
- * @note 配置文件路径为空时，会尝试从默认路径中查找配置文件
+ * @brief Load configuration from file
+ * @param config_path Path to the configuration file
+ * @return Pointer to the configuration structure
+ * @note Configuration file format is key-value pairs, supporting the following keys:
+ *      - API_KEY: DeepSeek API access key
+ *      - BASE_URL: Base URL of the DeepSeek API endpoint
+ *      - MODEL: Name of the model to use
+ *      - SYSTEM_PROMPT: System-level prompt information
+ * @note If the path is empty, attempts to locate the file from default locations
  */
 api_config_t *
 load_configuration (const char *config_path)
@@ -204,10 +240,10 @@ load_configuration (const char *config_path)
 }
 
 /**
- * @brief  Free configuration structure
- * @param config 配置参数结构体指针
- * @note 释放配置参数结构体及其成员变量
- * @note 传入NULL指针时不执行任何操作
+ * @brief Free configuration structure
+ * @param config Pointer to the configuration structure
+ * @note Frees the configuration structure and its member variables
+ * @note Does nothing if a NULL pointer is passed
  */
 void
 free_configuration (api_config_t *config)
@@ -222,14 +258,14 @@ free_configuration (api_config_t *config)
 }
 
 /**
- * @brief  Locate the configuration file
+ * @brief Locate the configuration file
  * @param void
- * @return 配置文件路径字符串
- * @note 尝试从以下路径中查找配置文件：
- *      - 当前目录下的 .adsenv 文件
- *      - 用户主目录下的 .adsenv 文件
- *      - 用户主目录下的 .config/.adsenv 文件
- *      - 系统级配置目录下的 /etc/ads/.adsenv 文件
+ * @return Path to the configuration file as a string
+ * @note Attempts to locate the configuration file from the following paths:
+ *      - .adsenv file in the current directory
+ *      - .adsenv file in the user's home directory
+ *      - .adsenv file in the user's .config directory
+ *      - .adsenv file in the system-wide /etc/ads directory
  */
 const char *
 locate_config_file (void)
@@ -261,10 +297,10 @@ locate_config_file (void)
 }
 
 /**
- * @brief  Print configuration as JSON
- * @param config 配置参数结构体指针
+ * @brief Print configuration in JSON format
+ * @param config Pointer to the configuration structure
  * @return void
- * @note 输出配置参数结构体的JSON格式字符串
+ * @note Outputs the configuration structure as a JSON formatted string
  */
 void
 dump_configuration_json (const api_config_t *config)
@@ -292,16 +328,16 @@ dump_configuration_json (const api_config_t *config)
     cJSON_Delete(root_object);
 }
 
-/*------------------------ HTTP通信模块实现 ------------------------*/
+/*------------------------ HTTP communication module implementation ------------------------*/
 
 /**
  * @brief Write data to buffer
- * @param buffer 数据缓冲区
- * @param element_size 数据元素大小
- * @param element_count 数据元素数量
- * @param user_buffer 用户数据缓冲区
- * @return 写入数据的字节数
- * @note 用于CURL库的数据写入回调函数
+ * @param buffer Data buffer
+ * @param element_size Size of each data element
+ * @param element_count Number of data elements
+ * @param user_buffer User data buffer
+ * @return Number of bytes written
+ * @note Callback function for writing data in the CURL library
  */
 
 static size_t curl_data_writer(char *buffer, size_t element_size,
@@ -324,13 +360,13 @@ static size_t curl_data_writer(char *buffer, size_t element_size,
 
 /**
  * @brief Perform an HTTP POST request
- * @param url 请求URL
- * @param auth_header 授权头信息
- * @param payload 请求体数据
- * @param response HTTP响应数据容器
- * @return CURLcode类型的错误码
- * @note 执行HTTP POST请求并将响应数据写入response
- * @note 通过CURL库执行HTTP请求
+ * @param url Request URL
+ * @param auth_header Authorization header
+ * @param payload Request body data
+ * @param response HTTP response data container
+ * @return CURLcode type error code
+ * @note Executes an HTTP POST request and writes the response data to the response
+ * @note Uses the CURL library to perform the HTTP request
  */
 static CURLcode
 perform_http_post (const char *url, const char *auth_header,
@@ -364,22 +400,22 @@ perform_http_post (const char *url, const char *auth_header,
 
 /**
  * @brief Build the JSON payload for requests
- * @param config API配置参数结构体指针
- * @param params 聊天请求参数结构体指针
- * @param stream 是否启用流式处理
- * @return JSON格式请求体字符串
- * @note 构建聊天请求的JSON格式请求体
- * @note 请求体包含模型名称、用户输入、系统提示和流式处理标志
- * @note 请求体格式如下：
+ * @param config Pointer to the API configuration structure
+ * @param params Pointer to the chat request parameters structure
+ * @param stream Whether to enable streaming
+ * @return JSON formatted request body string
+ * @note Constructs the JSON formatted request body for chat requests
+ * @note The request body includes the model name, user input, system prompt, and streaming flag
+ * @note The request body format is as follows:
  *     {
- *        "model": "模型名称",
+ *        "model": "model name",
  *       "messages": [
- *          {"role": "system", "content": "系统提示"},
- *         {"role": "user", "content": "用户输入"}
+ *          {"role": "system", "content": "system prompt"},
+ *         {"role": "user", "content": "user input"}
  *      ],
  *     "stream": true|false
  *    }
- * @note 请求体中的流式处理标志用于控制API的响应模式
+ * @note The streaming flag in the request body controls the API response mode
  */
 static char *
 construct_request_json (const api_config_t *config,
@@ -426,16 +462,16 @@ error:
     return NULL;
 }
 
-/*------------------------ 流式处理模块实现 ------------------------*/
+/*------------------------ Streaming module implementation ------------------------*/
 
 /**
  * @brief Callback to handle streaming response
- * @param ptr 数据缓冲区指针
- * @param size 数据元素大小
- * @param nmemb 数据元素数量
- * @param userdata 用户数据指针
- * @return 数据处理的字节数
- * @note 用于处理流式响应数据的回调函数
+ * @param ptr Data buffer pointer
+ * @param size Size of each data element
+ * @param nmemb Number of data elements
+ * @param userdata User data pointer
+ * @return Number of bytes processed
+ * @note Callback function for handling streaming response data
  */
 static size_t
 stream_data_callback (char *ptr, size_t size, size_t nmemb, void *userdata)
@@ -457,8 +493,8 @@ stream_data_callback (char *ptr, size_t size, size_t nmemb, void *userdata)
 }
 
 /**
- * @brief Process streamed response data chunks
- * @param ctx 流式处理上下文指针
+ * @brief Process streamed data chunks
+ * @param ctx Pointer to the streaming context
  * @return void
  */
 static void
@@ -502,10 +538,10 @@ process_stream_data (stream_context_t *ctx)
 
 /**
  * @brief Execute a streaming chat request
- * @param config API配置参数结构体指针
- * @param request_json 请求体JSON字符串
- * @param show_tokens 是否显示令牌统计
- * @return 成功返回0，失败返回-1
+ * @param config Pointer to the API configuration structure
+ * @param request_json JSON formatted request body string
+ * @param show_tokens Whether to show token statistics
+ * @return 0 on success, -1 on failure
  */
 int
 execute_streaming_request (const api_config_t *config, const char *request_json,
@@ -534,7 +570,7 @@ execute_streaming_request (const api_config_t *config, const char *request_json,
         fprintf(stderr, "Request failed: %s\n", curl_easy_strerror(res));
     }
 
-    /* 流式模式下无法获取完整的usage信息 */
+    /* Token usage unavailable in streaming mode */
     if (ctx.show_tokens) {
         fprintf(stderr, "\nToken usage unavailable in streaming mode\n");
     }
@@ -544,13 +580,13 @@ execute_streaming_request (const api_config_t *config, const char *request_json,
     return res == CURLE_OK ? 0 : -1;
 }
 
-/*------------------------ API请求处理模块实现 ------------------------*/
+/*------------------------ API request handling module implementation ------------------------*/
 
 /**
  * @brief Execute a non-streaming chat request
- * @param config API配置参数结构体指针
- * @param request_json 请求体JSON字符串
- * @return HTTP响应数据容器指针
+ * @param config Pointer to the API configuration structure
+ * @param request_json JSON formatted request body string
+ * @return Pointer to the HTTP response data container
  */
 http_response_t *
 execute_chat_request (const api_config_t *config, const char *request_json)
@@ -593,8 +629,8 @@ execute_chat_request (const api_config_t *config, const char *request_json)
 
 /**
  * @brief Parse and return the chat response
- * @param http_res HTTP响应数据容器指针
- * @return 解析后的聊天响应结构体指针
+ * @param http_res Pointer to the HTTP response data container
+ * @return Pointer to the parsed chat response structure
  */
 chat_response_t *
 parse_chat_response (const http_response_t *http_res)
@@ -665,11 +701,11 @@ error:
     return NULL;
 }
 
-/*------------------------ 工具函数模块实现 ------------------------*/
+/*------------------------ Utility functions implementation ------------------------*/
 
 /**
- * @brief Output text to stdout in streaming fashion
- * @param text_buffer 文本缓冲区
+ * @brief Output text to stdout in a streaming fashion
+ * @param text_buffer Text buffer
  * @return void
  */
 void
@@ -686,7 +722,7 @@ stream_output (const char *text_buffer)
 
 /**
  * @brief Trim leading and trailing whitespace
- * @param string_buffer 字符串缓冲区
+ * @param string_buffer String buffer
  * @return void
  */
 void
@@ -703,13 +739,13 @@ trim_whitespace (char *string_buffer)
     *(end_ptr + 1) = '\0';
 }
 
-/*------------------------ 命令行帮助信息 ------------------------*/
+/*------------------------ Command line help info ------------------------*/
 
 /**
  * @brief Print usage instructions
- * @param program_name 程序名称
- * @param output_stream 输出流
- * @param exit_code 退出码
+ * @param program_name Program name
+ * @param output_stream Output stream
+ * @param exit_code Exit code
  * @return void
  */
 static void
@@ -730,19 +766,19 @@ show_usage (const char *program_name, FILE *output_stream, int exit_code)
     exit(exit_code);
 }
 
-/*------------------------ 命令行参数解析 ------------------------*/
+/*------------------------ Command line argument parsing ------------------------*/
 
 /**
  * @brief Parse command-line arguments
- * @param argc 参数数量
- * @param argv 参数列表
- * @param print_config 打印配置标志
- * @param show_tokens 显示令牌统计标志
- * @param echo_input 回显输入标志
- * @param dry_run 演示运行标志
- * @param store_forward 非流式处理标志
- * @param user_query 用户问题字符串
- * @return 成功返回0，失败返回-1
+ * @param argc Number of arguments
+ * @param argv List of arguments
+ * @param print_config Print configuration flag
+ * @param show_tokens Show token statistics flag
+ * @param echo_input Echo input flag
+ * @param dry_run Dry run flag
+ * @param store_forward Non-streaming mode flag
+ * @param user_query User question string
+ * @return 0 on success, -1 on failure
  */
 static int
 parse_cli_arguments (int argc, char **argv,
@@ -793,13 +829,13 @@ parse_cli_arguments (int argc, char **argv,
     return 0;
 }
 
-/*------------------------ 主程序入口 ------------------------*/
+/*------------------------ Main program entry point ------------------------*/
 
 /**
  * @brief main: Program entry point
- * @param argc 参数数量
- * @param argv 参数列表
- * @return 成功返回0，失败返回1
+ * @param argc Number of arguments
+ * @param argv List of arguments
+ * @return 0 on success, 1 on failure
  */
 int
 main (int argc, char **argv)
