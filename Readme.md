@@ -1,6 +1,6 @@
 # Ask DeepSeek ( `ads` )
 
-A cli tool to interact with the DeepSeek API.
+A cli tool to interact with the [DeepSeek](https://github.com/deepseek-ai/DeepSeek-V3) API.
 It gaves you the ability to interact with the DeepSeek API from the command line.
 
 ## What is Ask-DeepSeek?
@@ -18,8 +18,20 @@ $ ads "Hello DeepSeek, how are you?"
 
 ### Basic Usage
 
-```bash
-$ ./ads "Hello, how are you?" # Ask a question
+```
+Usage: ads [OPTION]... "<QUESTION>"
+Command-line interface for DeepSeek LLM API
+
+Options:
+  -p, --print-env                 Print current configuration and exit
+  -j, --just-json                 Generate request JSON without sending to API
+  -c, --count-token               Show token usage statistics
+  -e, --echo                      Echo the user's input question
+  -h, --help                      Display this help and exit
+
+Examples:
+    ads -p                        # Show current config   
+    ads -j -e "Your question"    # Generate JSON and echo input
 ```
 
 ### Configuration (`.adsenv`)
@@ -37,7 +49,7 @@ The elements in the configuration file include `API-KEY`, `BASE_URL`, `MODEL`, `
 API_KEY=sk-ed......................293af
 BASE_URL=https://api.deepseek.com/chat/completions
 MODEL=deepseek-chat
-SYSTEM_MSG="你是一个专业的科学解释助手"
+SYSTEM_MSG="You are a professional of Computer Science."
 ```
 
 
