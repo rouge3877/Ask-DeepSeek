@@ -7,14 +7,11 @@
 #include <limits.h>
 #include <ctype.h>
 #include <getopt.h>
+#include <time.h>
 
 /* 配置常量 */
 #ifndef PATH_MAX
 #define PATH_MAX 4096
-#endif
-
-#ifndef PRINT_DELAY_USEC
-#define PRINT_DELAY_USEC 10000  // 10ms/字符
 #endif
 
 #ifndef DEFAULT_MODEL
@@ -66,7 +63,7 @@ static CURLcode http_post(const char* url, const char* auth_header,
 static char* build_request_json(const ApiConfig* config, const ChatParams* params);
 
 /* 函数声明 - 工具模块 */
-void print_slowly(const char* text, useconds_t delay);
+void print_slowly(const char* text, int max_delay);
 void trim_whitespace(char* str);
 
 //------------------------ 配置模块实现 ------------------------//
@@ -163,7 +160,6 @@ void print_environment_json(const ApiConfig* config) {
     cJSON *macros = cJSON_AddObjectToObject(root, "macros");
     cJSON_AddStringToObject(macros, "DEFAULT_MODEL", DEFAULT_MODEL);
     cJSON_AddStringToObject(macros, "DEFAULT_SYSTEM_MSG", DEFAULT_SYSTEM_MSG);
-    cJSON_AddNumberToObject(macros, "PRINT_DELAY_USEC", PRINT_DELAY_USEC);
     cJSON_AddNumberToObject(macros, "PATH_MAX", PATH_MAX);
     
     char *json_str = cJSON_Print(root);
@@ -283,11 +279,14 @@ ChatResponse* handle_chat_response(const CurlResponse* curl_res) {
 }
 
 //------------------------ 工具模块实现 ------------------------//
-void print_slowly(const char* text, useconds_t delay) {
+void print_slowly(const char* text, int max_delay) {
     for (size_t i = 0; text[i]; ++i) {
         putchar(text[i]);
         fflush(stdout);
-        usleep(delay);
+        if (max_delay > 0) {
+            useconds_t delay = (useconds_t)(rand() % (max_delay + 1));
+            usleep(delay);
+        }
     }
     putchar('\n');
 }
@@ -304,13 +303,17 @@ void trim_whitespace(char* str) {
 
 //------------------------ 主程序 ------------------------//
 int main(int argc, char** argv) {
+    srand(time(NULL)); // 初始化随机数生成器
+
     int print_env_flag = 0;
     int count_token_flag = 0;
     int echo_flag = 0;
     int just_json_flag = 0;
+    int max_delay = 50000; // 默认随机延迟最大值
     int opt;
     
     static struct option long_options[] = {
+        {"non-animation", optional_argument, 0, 'a'},
         {"print-env", no_argument, 0, 'p'},
         {"just-json", no_argument, 0, 'j'},
         {"count-token", no_argument, 0, 'c'},
@@ -318,8 +321,21 @@ int main(int argc, char** argv) {
         {0, 0, 0, 0}
     };
 
-    while ((opt = getopt_long(argc, argv, "pjc:e", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "a::pjc:e", long_options, NULL)) != -1) {
         switch (opt) {
+            case 'a':
+                if (optarg) {
+                    char *endptr;
+                    long int val = strtol(optarg, &endptr, 10);
+                    if (endptr == optarg || *endptr != '\0' || val < 0 || val > INT_MAX) {
+                        fprintf(stderr, "Invalid delay value: %s\n", optarg);
+                        return EXIT_FAILURE;
+                    }
+                    max_delay = (int)val;
+                } else {
+                    max_delay = 0; // 关闭动画
+                }
+                break;
             case 'p':
                 print_env_flag = 1;
                 break;
@@ -333,7 +349,7 @@ int main(int argc, char** argv) {
                 echo_flag = 1;
                 break;
             default:
-                fprintf(stderr, "Usage: %s [-p] [-j] [-c] [-e] \"<your question>\"\n", argv[0]);
+                fprintf(stderr, "Usage: %s [-a [max_delay]] [-p] [-j] [-c] [-e] \"<your question>\"\n", argv[0]);
                 return EXIT_FAILURE;
         }
     }
@@ -360,7 +376,7 @@ int main(int argc, char** argv) {
     /* 检查剩余参数 */
     if (optind >= argc) {
         fprintf(stderr, "Error: Missing user question\n");
-        fprintf(stderr, "Usage: %s [-p] [-j] [-c] [-e] \"<your question>\"\n", argv[0]);
+        fprintf(stderr, "Usage: %s [-a [max_delay]] [-p] [-j] [-c] [-e] \"<your question>\"\n", argv[0]);
         return EXIT_FAILURE;
     }
     char* user_question = argv[optind];
@@ -420,7 +436,7 @@ int main(int argc, char** argv) {
     /* 处理响应 */
     if (response && response->content) {
         printf("\nAnswer: ");
-        print_slowly(response->content, PRINT_DELAY_USEC);
+        print_slowly(response->content, max_delay);
         
         if (count_token_flag) {
             printf("\nToken Usage:\n  Prompt: %d\n  Completion: %d\n  Total: %d\n",
