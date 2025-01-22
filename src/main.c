@@ -117,7 +117,19 @@ void trim_whitespace(char *string_buffer);
 
 /*------------------------ 配置管理模块实现 ------------------------*/
 
-api_config_t *load_configuration(const char *config_path)
+/**
+ * @brief Load configuration from file、
+ * @param config_path 配置文件路径
+ * @return 配置参数结构体指针
+ * @note 配置文件格式为键值对，支持以下键：
+ *      - API_KEY: DeepSeek API访问密钥
+ *      - BASE_URL: DeepSeek API端点基础URL
+ *      - MODEL: 使用的模型名称
+ *      - SYSTEM_PROMPT: 系统级提示信息
+ * @note 配置文件路径为空时，会尝试从默认路径中查找配置文件
+ */
+api_config_t *
+load_configuration (const char *config_path)
 {
     FILE *config_file = fopen(config_path, "r");
     if (!config_file) {
@@ -191,7 +203,14 @@ api_config_t *load_configuration(const char *config_path)
     return config;
 }
 
-void free_configuration(api_config_t *config)
+/**
+ * @brief  Free configuration structure
+ * @param config 配置参数结构体指针
+ * @note 释放配置参数结构体及其成员变量
+ * @note 传入NULL指针时不执行任何操作
+ */
+void
+free_configuration (api_config_t *config)
 {
     if (config) {
         SAFE_FREE(config->api_key);
@@ -202,7 +221,18 @@ void free_configuration(api_config_t *config)
     }
 }
 
-const char *locate_config_file(void)
+/**
+ * @brief  Locate the configuration file
+ * @param void
+ * @return 配置文件路径字符串
+ * @note 尝试从以下路径中查找配置文件：
+ *      - 当前目录下的 .adsenv 文件
+ *      - 用户主目录下的 .adsenv 文件
+ *      - 用户主目录下的 .config/.adsenv 文件
+ *      - 系统级配置目录下的 /etc/ads/.adsenv 文件
+ */
+const char *
+locate_config_file (void)
 {
     static const char *config_search_paths[] = {
         "./.adsenv",
@@ -230,7 +260,14 @@ const char *locate_config_file(void)
     return NULL;
 }
 
-void dump_configuration_json(const api_config_t *config)
+/**
+ * @brief  Print configuration as JSON
+ * @param config 配置参数结构体指针
+ * @return void
+ * @note 输出配置参数结构体的JSON格式字符串
+ */
+void
+dump_configuration_json (const api_config_t *config)
 {
     cJSON *root_object = cJSON_CreateObject();
     cJSON *config_section = cJSON_AddObjectToObject(root_object, "configuration");
@@ -257,6 +294,16 @@ void dump_configuration_json(const api_config_t *config)
 
 /*------------------------ HTTP通信模块实现 ------------------------*/
 
+/**
+ * @brief Write data to buffer
+ * @param buffer 数据缓冲区
+ * @param element_size 数据元素大小
+ * @param element_count 数据元素数量
+ * @param user_buffer 用户数据缓冲区
+ * @return 写入数据的字节数
+ * @note 用于CURL库的数据写入回调函数
+ */
+
 static size_t curl_data_writer(char *buffer, size_t element_size,
                               size_t element_count, void *user_buffer)
 {
@@ -275,8 +322,19 @@ static size_t curl_data_writer(char *buffer, size_t element_size,
     return data_size;
 }
 
-static CURLcode perform_http_post(const char *url, const char *auth_header,
-                                 const char *payload, http_response_t *response)
+/**
+ * @brief Perform an HTTP POST request
+ * @param url 请求URL
+ * @param auth_header 授权头信息
+ * @param payload 请求体数据
+ * @param response HTTP响应数据容器
+ * @return CURLcode类型的错误码
+ * @note 执行HTTP POST请求并将响应数据写入response
+ * @note 通过CURL库执行HTTP请求
+ */
+static CURLcode
+perform_http_post (const char *url, const char *auth_header,
+                   const char *payload, http_response_t *response)
 {
     CURL *curl_handle = curl_easy_init();
     if (!curl_handle) return CURLE_FAILED_INIT;
@@ -304,9 +362,29 @@ static CURLcode perform_http_post(const char *url, const char *auth_header,
     return result;
 }
 
-static char *construct_request_json(const api_config_t *config,
-                                   const chat_request_params_t *params,
-                                   int stream)
+/**
+ * @brief Build the JSON payload for requests
+ * @param config API配置参数结构体指针
+ * @param params 聊天请求参数结构体指针
+ * @param stream 是否启用流式处理
+ * @return JSON格式请求体字符串
+ * @note 构建聊天请求的JSON格式请求体
+ * @note 请求体包含模型名称、用户输入、系统提示和流式处理标志
+ * @note 请求体格式如下：
+ *     {
+ *        "model": "模型名称",
+ *       "messages": [
+ *          {"role": "system", "content": "系统提示"},
+ *         {"role": "user", "content": "用户输入"}
+ *      ],
+ *     "stream": true|false
+ *    }
+ * @note 请求体中的流式处理标志用于控制API的响应模式
+ */
+static char *
+construct_request_json (const api_config_t *config,
+                        const chat_request_params_t *params,
+                        int stream)
 {
     cJSON *root_object = cJSON_CreateObject();
     if (!root_object) return NULL;
@@ -350,7 +428,17 @@ error:
 
 /*------------------------ 流式处理模块实现 ------------------------*/
 
-static size_t stream_data_callback(char *ptr, size_t size, size_t nmemb, void *userdata)
+/**
+ * @brief Callback to handle streaming response
+ * @param ptr 数据缓冲区指针
+ * @param size 数据元素大小
+ * @param nmemb 数据元素数量
+ * @param userdata 用户数据指针
+ * @return 数据处理的字节数
+ * @note 用于处理流式响应数据的回调函数
+ */
+static size_t
+stream_data_callback (char *ptr, size_t size, size_t nmemb, void *userdata)
 {
     size_t data_size = size * nmemb;
     stream_context_t *ctx = (stream_context_t *)userdata;
@@ -368,7 +456,13 @@ static size_t stream_data_callback(char *ptr, size_t size, size_t nmemb, void *u
     return data_size;
 }
 
-static void process_stream_data(stream_context_t *ctx)
+/**
+ * @brief Process streamed response data chunks
+ * @param ctx 流式处理上下文指针
+ * @return void
+ */
+static void
+process_stream_data (stream_context_t *ctx)
 {
     char *line_start = ctx->buffer;
     char *line_end;
@@ -406,7 +500,16 @@ static void process_stream_data(stream_context_t *ctx)
     ctx->buffer[remaining] = '\0';
 }
 
-int execute_streaming_request(const api_config_t *config, const char *request_json, int show_tokens)
+/**
+ * @brief Execute a streaming chat request
+ * @param config API配置参数结构体指针
+ * @param request_json 请求体JSON字符串
+ * @param show_tokens 是否显示令牌统计
+ * @return 成功返回0，失败返回-1
+ */
+int
+execute_streaming_request (const api_config_t *config, const char *request_json,
+                           int show_tokens)
 {
     CURL *curl = curl_easy_init();
     if (!curl) return -1;
@@ -443,7 +546,14 @@ int execute_streaming_request(const api_config_t *config, const char *request_js
 
 /*------------------------ API请求处理模块实现 ------------------------*/
 
-http_response_t *execute_chat_request(const api_config_t *config, const char *request_json)
+/**
+ * @brief Execute a non-streaming chat request
+ * @param config API配置参数结构体指针
+ * @param request_json 请求体JSON字符串
+ * @return HTTP响应数据容器指针
+ */
+http_response_t *
+execute_chat_request (const api_config_t *config, const char *request_json)
 {
     http_response_t *response = calloc(1, sizeof(http_response_t));
     if (!response) {
@@ -481,7 +591,13 @@ http_response_t *execute_chat_request(const api_config_t *config, const char *re
     return response;
 }
 
-chat_response_t *parse_chat_response(const http_response_t *http_res)
+/**
+ * @brief Parse and return the chat response
+ * @param http_res HTTP响应数据容器指针
+ * @return 解析后的聊天响应结构体指针
+ */
+chat_response_t *
+parse_chat_response (const http_response_t *http_res)
 {
     if (!http_res || !http_res->payload) {
         fprintf(stderr, "Received empty response\n");
@@ -551,7 +667,13 @@ error:
 
 /*------------------------ 工具函数模块实现 ------------------------*/
 
-void stream_output(const char *text_buffer)
+/**
+ * @brief Output text to stdout in streaming fashion
+ * @param text_buffer 文本缓冲区
+ * @return void
+ */
+void
+stream_output (const char *text_buffer)
 {
     if (!text_buffer) return;
 
@@ -562,7 +684,13 @@ void stream_output(const char *text_buffer)
     putchar('\n');
 }
 
-void trim_whitespace(char *string_buffer)
+/**
+ * @brief Trim leading and trailing whitespace
+ * @param string_buffer 字符串缓冲区
+ * @return void
+ */
+void
+trim_whitespace (char *string_buffer)
 {
     if (!string_buffer) return;
 
@@ -577,7 +705,15 @@ void trim_whitespace(char *string_buffer)
 
 /*------------------------ 命令行帮助信息 ------------------------*/
 
-static void show_usage(const char *program_name, FILE *output_stream, int exit_code)
+/**
+ * @brief Print usage instructions
+ * @param program_name 程序名称
+ * @param output_stream 输出流
+ * @param exit_code 退出码
+ * @return void
+ */
+static void
+show_usage (const char *program_name, FILE *output_stream, int exit_code)
 {
     fprintf(output_stream, "Usage: %s [options]... \"<question>\"\n", program_name);
     fprintf(output_stream, "DeepSeek model command line interface\n\n");
@@ -596,9 +732,22 @@ static void show_usage(const char *program_name, FILE *output_stream, int exit_c
 
 /*------------------------ 命令行参数解析 ------------------------*/
 
-static int parse_cli_arguments(int argc, char **argv,
-                              int *print_config, int *show_tokens, int *echo_input,
-                              int *dry_run, int *store_forward, char **user_query)
+/**
+ * @brief Parse command-line arguments
+ * @param argc 参数数量
+ * @param argv 参数列表
+ * @param print_config 打印配置标志
+ * @param show_tokens 显示令牌统计标志
+ * @param echo_input 回显输入标志
+ * @param dry_run 演示运行标志
+ * @param store_forward 非流式处理标志
+ * @param user_query 用户问题字符串
+ * @return 成功返回0，失败返回-1
+ */
+static int
+parse_cli_arguments (int argc, char **argv,
+                     int *print_config, int *show_tokens, int *echo_input,
+                     int *dry_run, int *store_forward, char **user_query)
 {
     static struct option long_options[] = {
         {"print-config",  no_argument, NULL, 'p'},
@@ -646,7 +795,14 @@ static int parse_cli_arguments(int argc, char **argv,
 
 /*------------------------ 主程序入口 ------------------------*/
 
-int main(int argc, char **argv)
+/**
+ * @brief main: Program entry point
+ * @param argc 参数数量
+ * @param argv 参数列表
+ * @return 成功返回0，失败返回1
+ */
+int
+main (int argc, char **argv)
 {
     srand(time(NULL));
 
