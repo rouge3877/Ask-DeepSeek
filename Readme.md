@@ -55,8 +55,96 @@ SYSTEM_MSG="You are a professional of Computer Science."
 
 ## How to install Ask-DeepSeek?
 
+** Before you install the program, a `.adsenv` file is nascessary. **
+
+
+### Requirements
+
+The program requires the following dependencies to be installed on your system:
+- `cJSON`: A JSON parser for C
+- `libcurl`: A library for transferring data with URLs
+
+#### Ubuntu/Debian
+
+```bash
+sudo apt update
+sudo apt install libcjson-dev
+sudo apt install libcurl4-openssl-dev
+```
+
+#### Fedora
+
+```bash
+sudo dnf install cjson-devel
+sudo dnf install libcurl-devel
+```
+
+#### macOS (Homebrew)
+
+```bash
+brew install cjson
+brew install curl
+```
+
+#### Check the installation
+
+You can check the installation of the libraries by running the following commands:
+
+```bash
+pkg-config --cflags --libs libcjson
+pkg-config --cflags --libs libcurl
+```
+
+If the installation is successful, you should see content similar to the following:
+
+```bash
+-I/usr/include/cjson -lcjson
+-I/usr/include/x86_64-linux-gnu/curl -lcurl
+```
+
+### Compile from source
+
+If you want to compile the program from source, you can follow the instructions below: *（Remember to install the dependencies first）*
+
+```bash
+$ git clone https://github.com/rouge3877/Ask-DeepSeek.git
+$ cd Ask-DeepSeek
+$ vim .adsenv # Create the .adsenv file and add the configuration
+$ make release
+```
+
+After running the above commands, you should see the `ads` executable in the `./build/release` directory.
+You can also use the `make debug` command to compile the program in debug mode. Use `make help` to see all available options.
+
+### Install from source
+
+You can also install the program on your system by running the following command:
+
+```bash
+$ git clone https://github.com/rouge3877/Ask-DeepSeek.git
+$ cd Ask-DeepSeek
+$ vim .adsenv # Create the .adsenv file and add the configuration
+$ sudo make install
+```
+
+After running the above commands, you should be able to use the `ads` command from the terminal.
+
+### Uninstall
+
+If you want to uninstall the program from your system, you can run the following command:
+
+```bash
+$ sudo make uninstall
+```
+
+## How to get the API key?
+
+You can get the API key by signing up on the [DeepSeek](https://platform.deepseek.com/). After signing up, you can get the API key from the dashboard.
+
+
+
 ## TODO
 - [x] Resolve bugs in output animation.
 - [x] Add functionality to use the stream parameter in the API.
 - [ ] Support providing more configurations in the. adsenv file.
-- [ ] Split a single file in the project into different files to increase readability and maintainability.
+- [x] Split a single file in the project into different files to increase readability and maintainability.
