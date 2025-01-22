@@ -1,745 +1,19 @@
 /**
  * @file main.c
- * @brief DeepSeek CLI main program
- * @note Ask-DeepSeek - Command-line interface tool for the DeepSeek large language model
- * @note This program uses the libcurl and cJSON libraries for API communication
- * @note Distributed under the MIT license
+ * @brief Ask-DeepSeek CLI main program
+ * @note Entry point and command line handling
  * @author Rouge Lin
  * @date 2025-01-23
  */
 
-
-/* System header files */
-#include <ctype.h>
+#include "config.h"
+#include "http_client.h"
+#include "api_handler.h"
+#include "stream_handler.h"
+#include "utils.h"
 #include <getopt.h>
-#include <limits.h>
-#include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
-#include <unistd.h>
-
-/* Third-party library headers */
-#include <curl/curl.h>
-#include <cjson/cJSON.h>
-
-/* Configuration constants */
-/**
- * @def PATH_MAX
- * @brief Maximum file path length
- * @note If the PATH_MAX macro is not defined, set it to 4096
- */
-#ifndef PATH_MAX
-# define PATH_MAX 4096                /* Maximum file path length */
-#endif
-
-/**
- * @def DEFAULT_MODEL
- * @brief Default model name
- * @note If the DEFAULT_MODEL macro is not defined, set it to "deepseek-chat"
- */
-#ifndef DEFAULT_MODEL
-# define DEFAULT_MODEL "deepseek-chat" /* Default model name */
-#endif
-
-/**
- * @def DEFAULT_SYSTEM_PROMPT
- * @brief Default system prompt
- * @note If the DEFAULT_SYSTEM_PROMPT macro is not defined, set it to "You are a helpful assistant."
- */
-#ifndef DEFAULT_SYSTEM_PROMPT
-# define DEFAULT_SYSTEM_PROMPT "You are a helpful assistant." /* Default system prompt */
-#endif
-
-/* Type definitions */
-
-/**
- * @struct api_config_t
- * @brief Structure that stores API configuration parameters
- * @var api_key API access key
- * @var base_url Base URL of the API endpoint
- * @var model_name Name of the model to use
- * @var system_prompt System-level prompt information
- */
-typedef struct {
-    char *api_key;       /**< API access key */
-    char *base_url;      /**< Base URL of the API endpoint */
-    char *model_name;    /**< Name of the model to use */
-    char *system_prompt; /**< System-level prompt information */
-} api_config_t;
-
-/**
- * @struct chat_request_params_t
- * @brief Structure for chat request parameters
- * @var user_query User input query content
- * @var custom_prompt Custom system prompt (optional)
- */
-typedef struct {
-    char *user_query;    /**< User input query content */
-    char *custom_prompt; /**< Custom system prompt (optional) */
-} chat_request_params_t;
-
-/**
- * @struct chat_response_t
- * @brief Structure for parsed chat response
- * @var content Generated response content
- * @var input_token_count Input token count
- * @var output_token_count Output token count
- * @var total_token_count Total token count
- */
-typedef struct {
-    char *content;           /**< Generated response content */
-    int input_token_count;   /**< Input token count */
-    int output_token_count;  /**< Output token count */
-    int total_token_count;   /**< Total token count */
-} chat_response_t;
-
-/**
- * @struct http_response_t
- * @brief HTTP response data container
- * @var payload Response body data
- * @var payload_size Response body size
- * @var status_code HTTP status code
- */
-typedef struct {
-    char *payload;       /**< Response body data */
-    size_t payload_size; /**< Response body size */
-    long status_code;    /**< HTTP status code */
-} http_response_t;
-
-/**
- * @struct stream_context_t
- * @brief Context for handling streaming output
- * @var buffer Data buffer
- * @var buffer_len Current buffer length
- * @var show_tokens Whether to show token statistics
- */
-typedef struct {
-    char buffer[4096];   /**< Data buffer */
-    size_t buffer_len;   /**< Current buffer length */
-    int show_tokens;     /**< Whether to show token statistics */
-} stream_context_t;
-
-/*------------------------ Function Declarations ------------------------*/
-
-/* Configuration management module */
-api_config_t *load_configuration(const char *config_path);
-void free_configuration(api_config_t *config);
-const char *locate_config_file(void);
-void dump_configuration_json(const api_config_t *config);
-
-/* API request handling module */
-http_response_t *execute_chat_request(const api_config_t *config, const char *request_json);
-int execute_streaming_request(const api_config_t *config, const char *request_json, int show_tokens);
-chat_response_t *parse_chat_response(const http_response_t *http_res);
-
-/* HTTP communication module */
-static CURLcode perform_http_post(const char *url, const char *auth_header,
-                                  const char *payload, http_response_t *response);
-static char *construct_request_json(const api_config_t *config, 
-                                   const chat_request_params_t *params,
-                                   int stream);
-
-/* Streaming module */
-static size_t stream_data_callback(char *ptr, size_t size, size_t nmemb, void *userdata);
-static void process_stream_data(stream_context_t *ctx);
-
-/* Utility functions */
-void stream_output(const char *text_buffer);
-void trim_whitespace(char *string_buffer);
-
-/* Memory safety macro */
-#define SAFE_FREE(ptr) do { free(ptr); (ptr) = NULL; } while(0)
-
-/*------------------------ Configuration management module implementation ------------------------*/
-
-/**
- * @brief Load configuration from file
- * @param config_path Path to the configuration file
- * @return Pointer to the configuration structure
- * @note Configuration file format is key-value pairs, supporting the following keys:
- *      - API_KEY: DeepSeek API access key
- *      - BASE_URL: Base URL of the DeepSeek API endpoint
- *      - MODEL: Name of the model to use
- *      - SYSTEM_PROMPT: System-level prompt information
- * @note If the path is empty, attempts to locate the file from default locations
- */
-api_config_t *
-load_configuration (const char *config_path)
-{
-    FILE *config_file = fopen(config_path, "r");
-    if (!config_file) {
-        perror("Failed to open configuration file");
-        return NULL;
-    }
-
-    api_config_t *config = calloc(1, sizeof(api_config_t));
-    if (!config) {
-        fclose(config_file);
-        return NULL;
-    }
-
-    config->model_name = strdup(DEFAULT_MODEL);
-    config->system_prompt = strdup(DEFAULT_SYSTEM_PROMPT);
-    if (!config->model_name || !config->system_prompt) {
-        perror("Memory allocation failed");
-        free_configuration(config);
-        fclose(config_file);
-        return NULL;
-    }
-
-    char config_line[256];
-    while (fgets(config_line, sizeof(config_line), config_file)) {
-        char *comment_start = strchr(config_line, '#');
-        if (comment_start) *comment_start = '\0';
-        trim_whitespace(config_line);
-        if (config_line[0] == '\0') continue;
-
-        char *delimiter = strchr(config_line, '=');
-        if (!delimiter) continue;
-        *delimiter = '\0';
-
-        char *key = config_line;
-        char *value = delimiter + 1;
-        trim_whitespace(key);
-        trim_whitespace(value);
-
-        char **target_field = NULL;
-        if (strcmp(key, "API_KEY") == 0) {
-            target_field = &config->api_key;
-        } else if (strcmp(key, "BASE_URL") == 0) {
-            target_field = &config->base_url;
-        } else if (strcmp(key, "MODEL") == 0) {
-            target_field = &config->model_name;
-        } else if (strcmp(key, "SYSTEM_PROMPT") == 0) {
-            target_field = &config->system_prompt;
-        }
-
-        if (target_field) {
-            char *new_value = strdup(value);
-            if (!new_value) {
-                perror("Memory allocation failed");
-                free_configuration(config);
-                fclose(config_file);
-                return NULL;
-            }
-            free(*target_field);
-            *target_field = new_value;
-        }
-    }
-
-    if (ferror(config_file)) {
-        perror("Error reading configuration file");
-        free_configuration(config);
-        fclose(config_file);
-        return NULL;
-    }
-
-    fclose(config_file);
-    return config;
-}
-
-/**
- * @brief Free configuration structure
- * @param config Pointer to the configuration structure
- * @note Frees the configuration structure and its member variables
- * @note Does nothing if a NULL pointer is passed
- */
-void
-free_configuration (api_config_t *config)
-{
-    if (config) {
-        SAFE_FREE(config->api_key);
-        SAFE_FREE(config->base_url);
-        SAFE_FREE(config->model_name);
-        SAFE_FREE(config->system_prompt);
-        SAFE_FREE(config);
-    }
-}
-
-/**
- * @brief Locate the configuration file
- * @param void
- * @return Path to the configuration file as a string
- * @note Attempts to locate the configuration file from the following paths:
- *      - .adsenv file in the current directory
- *      - .adsenv file in the user's home directory
- *      - .adsenv file in the user's .config directory
- *      - .adsenv file in the system-wide /etc/ads directory
- */
-const char *
-locate_config_file (void)
-{
-    static const char *config_search_paths[] = {
-        "./.adsenv",
-        NULL,
-        NULL,
-        "/etc/ads/.adsenv"
-    };
-
-    const char *home_dir = getenv("HOME");
-    if (home_dir) {
-        static char user_config_path[PATH_MAX];
-        static char xdg_config_path[PATH_MAX];
-        snprintf(user_config_path, sizeof(user_config_path), "%s/.adsenv", home_dir);
-        snprintf(xdg_config_path, sizeof(xdg_config_path), 
-                "%s/.config/.adsenv", home_dir);
-        config_search_paths[1] = user_config_path;
-        config_search_paths[2] = xdg_config_path;
-    }
-
-    for (size_t i = 0; i < sizeof(config_search_paths)/sizeof(config_search_paths[0]); ++i) {
-        if (config_search_paths[i] && access(config_search_paths[i], R_OK) == 0) {
-            return config_search_paths[i];
-        }
-    }
-    return NULL;
-}
-
-/**
- * @brief Print configuration in JSON format
- * @param config Pointer to the configuration structure
- * @return void
- * @note Outputs the configuration structure as a JSON formatted string
- */
-void
-dump_configuration_json (const api_config_t *config)
-{
-    cJSON *root_object = cJSON_CreateObject();
-    cJSON *config_section = cJSON_AddObjectToObject(root_object, "configuration");
-    
-    cJSON_AddStringToObject(config_section, "api_key", 
-                           config->api_key ? config->api_key : "");
-    cJSON_AddStringToObject(config_section, "base_url", 
-                           config->base_url ? config->base_url : "");
-    cJSON_AddStringToObject(config_section, "model", config->model_name);
-    cJSON_AddStringToObject(config_section, "system_prompt", config->system_prompt);
-    
-    cJSON *constants_section = cJSON_AddObjectToObject(root_object, "constants");
-    cJSON_AddStringToObject(constants_section, "DEFAULT_MODEL", DEFAULT_MODEL);
-    cJSON_AddStringToObject(constants_section, "DEFAULT_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT);
-    cJSON_AddNumberToObject(constants_section, "PATH_MAX", PATH_MAX);
-    
-    char *json_output = cJSON_Print(root_object);
-    if (json_output) {
-        printf("%s\n", json_output);
-        SAFE_FREE(json_output);
-    }
-    cJSON_Delete(root_object);
-}
-
-/*------------------------ HTTP communication module implementation ------------------------*/
-
-/**
- * @brief Write data to buffer
- * @param buffer Data buffer
- * @param element_size Size of each data element
- * @param element_count Number of data elements
- * @param user_buffer User data buffer
- * @return Number of bytes written
- * @note Callback function for writing data in the CURL library
- */
-
-static size_t curl_data_writer(char *buffer, size_t element_size,
-                              size_t element_count, void *user_buffer)
-{
-    size_t data_size = element_size * element_count;
-    http_response_t *response_buffer = (http_response_t *)user_buffer;
-
-    char *new_buffer = realloc(response_buffer->payload, 
-                              response_buffer->payload_size + data_size + 1);
-    if (!new_buffer) return 0;
-
-    response_buffer->payload = new_buffer;
-    memcpy(&response_buffer->payload[response_buffer->payload_size], 
-          buffer, data_size);
-    response_buffer->payload_size += data_size;
-    response_buffer->payload[response_buffer->payload_size] = '\0';
-    return data_size;
-}
-
-/**
- * @brief Perform an HTTP POST request
- * @param url Request URL
- * @param auth_header Authorization header
- * @param payload Request body data
- * @param response HTTP response data container
- * @return CURLcode type error code
- * @note Executes an HTTP POST request and writes the response data to the response
- * @note Uses the CURL library to perform the HTTP request
- */
-static CURLcode
-perform_http_post (const char *url, const char *auth_header,
-                   const char *payload, http_response_t *response)
-{
-    CURL *curl_handle = curl_easy_init();
-    if (!curl_handle) return CURLE_FAILED_INIT;
-
-    struct curl_slist *header_list = NULL;
-    header_list = curl_slist_append(header_list, "Content-Type: application/json");
-    header_list = curl_slist_append(header_list, auth_header);
-
-    curl_easy_setopt(curl_handle, CURLOPT_URL, url);
-    curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, header_list);
-    curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, payload);
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, curl_data_writer);
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, response);
-    curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "deepseek-cli/1.0");
-    curl_easy_setopt(curl_handle, CURLOPT_TIMEOUT, 30L);
-
-    CURLcode result = curl_easy_perform(curl_handle);
-    if (result == CURLE_OK) {
-        curl_easy_getinfo(curl_handle, CURLINFO_RESPONSE_CODE, 
-                         &response->status_code);
-    }
-    
-    curl_slist_free_all(header_list);
-    curl_easy_cleanup(curl_handle);
-    return result;
-}
-
-/**
- * @brief Build the JSON payload for requests
- * @param config Pointer to the API configuration structure
- * @param params Pointer to the chat request parameters structure
- * @param stream Whether to enable streaming
- * @return JSON formatted request body string
- * @note Constructs the JSON formatted request body for chat requests
- * @note The request body includes the model name, user input, system prompt, and streaming flag
- * @note The request body format is as follows:
- *     {
- *        "model": "model name",
- *       "messages": [
- *          {"role": "system", "content": "system prompt"},
- *         {"role": "user", "content": "user input"}
- *      ],
- *     "stream": true|false
- *    }
- * @note The streaming flag in the request body controls the API response mode
- */
-static char *
-construct_request_json (const api_config_t *config,
-                        const chat_request_params_t *params,
-                        int stream)
-{
-    cJSON *root_object = cJSON_CreateObject();
-    if (!root_object) return NULL;
-
-    if (!cJSON_AddStringToObject(root_object, "model", config->model_name)) goto error;
-
-    cJSON *message_array = cJSON_AddArrayToObject(root_object, "messages");
-    if (!message_array) goto error;
-
-    cJSON *system_message = cJSON_CreateObject();
-    if (!cJSON_AddStringToObject(system_message, "role", "system") ||
-        !cJSON_AddStringToObject(system_message, "content", 
-             params->custom_prompt ? params->custom_prompt : config->system_prompt)) {
-        cJSON_Delete(system_message);
-        goto error;
-    }
-    cJSON_AddItemToArray(message_array, system_message);
-
-    cJSON *user_message = cJSON_CreateObject();
-    if (!cJSON_AddStringToObject(user_message, "role", "user") ||
-        !cJSON_AddStringToObject(user_message, "content", params->user_query)) {
-        cJSON_Delete(user_message);
-        goto error;
-    }
-    cJSON_AddItemToArray(message_array, user_message);
-
-    if (stream) {
-        if (!cJSON_AddTrueToObject(root_object, "stream")) goto error;
-    } else {
-        if (!cJSON_AddFalseToObject(root_object, "stream")) goto error;
-    }
-
-    char *json_output = cJSON_PrintUnformatted(root_object);
-    cJSON_Delete(root_object);
-    return json_output;
-
-error:
-    cJSON_Delete(root_object);
-    return NULL;
-}
-
-/*------------------------ Streaming module implementation ------------------------*/
-
-/**
- * @brief Callback to handle streaming response
- * @param ptr Data buffer pointer
- * @param size Size of each data element
- * @param nmemb Number of data elements
- * @param userdata User data pointer
- * @return Number of bytes processed
- * @note Callback function for handling streaming response data
- */
-static size_t
-stream_data_callback (char *ptr, size_t size, size_t nmemb, void *userdata)
-{
-    size_t data_size = size * nmemb;
-    stream_context_t *ctx = (stream_context_t *)userdata;
-
-    if (ctx->buffer_len + data_size >= sizeof(ctx->buffer)) {
-        fprintf(stderr, "Stream buffer overflow\n");
-        return 0;
-    }
-
-    memcpy(ctx->buffer + ctx->buffer_len, ptr, data_size);
-    ctx->buffer_len += data_size;
-    ctx->buffer[ctx->buffer_len] = '\0';
-
-    process_stream_data(ctx);
-    return data_size;
-}
-
-/**
- * @brief Process streamed data chunks
- * @param ctx Pointer to the streaming context
- * @return void
- */
-static void
-process_stream_data (stream_context_t *ctx)
-{
-    char *line_start = ctx->buffer;
-    char *line_end;
-
-    while ((line_end = strchr(line_start, '\n')) != NULL) {
-        *line_end = '\0';
-
-        if (strncmp(line_start, "data: ", 6) == 0) {
-            line_start += 6;
-        }
-
-        cJSON *root = cJSON_Parse(line_start);
-        if (root) {
-            cJSON *choices = cJSON_GetObjectItem(root, "choices");
-            if (cJSON_IsArray(choices) && cJSON_GetArraySize(choices) > 0) {
-                cJSON *choice = cJSON_GetArrayItem(choices, 0);
-                cJSON *delta = cJSON_GetObjectItem(choice, "delta");
-                if (delta) {
-                    cJSON *content = cJSON_GetObjectItem(delta, "content");
-                    if (cJSON_IsString(content)) {
-                        printf("%s", content->valuestring);
-                        fflush(stdout);
-                    }
-                }
-            }
-            cJSON_Delete(root);
-        }
-
-        line_start = line_end + 1;
-    }
-
-    size_t remaining = ctx->buffer_len - (line_start - ctx->buffer);
-    memmove(ctx->buffer, line_start, remaining);
-    ctx->buffer_len = remaining;
-    ctx->buffer[remaining] = '\0';
-}
-
-/**
- * @brief Execute a streaming chat request
- * @param config Pointer to the API configuration structure
- * @param request_json JSON formatted request body string
- * @param show_tokens Whether to show token statistics
- * @return 0 on success, -1 on failure
- */
-int
-execute_streaming_request (const api_config_t *config, const char *request_json,
-                           int show_tokens)
-{
-    CURL *curl = curl_easy_init();
-    if (!curl) return -1;
-
-    char auth_header[256];
-    snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", config->api_key);
-
-    struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    headers = curl_slist_append(headers, auth_header);
-
-    stream_context_t ctx = { .buffer_len = 0, .show_tokens = show_tokens };
-
-    curl_easy_setopt(curl, CURLOPT_URL, config->base_url);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request_json);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream_data_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
-
-    CURLcode res = curl_easy_perform(curl);
-    if (res != CURLE_OK) {
-        fprintf(stderr, "Request failed: %s\n", curl_easy_strerror(res));
-    }
-
-    /* Token usage unavailable in streaming mode */
-    if (ctx.show_tokens) {
-        fprintf(stderr, "\nToken usage unavailable in streaming mode\n");
-    }
-
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    return res == CURLE_OK ? 0 : -1;
-}
-
-/*------------------------ API request handling module implementation ------------------------*/
-
-/**
- * @brief Execute a non-streaming chat request
- * @param config Pointer to the API configuration structure
- * @param request_json JSON formatted request body string
- * @return Pointer to the HTTP response data container
- */
-http_response_t *
-execute_chat_request (const api_config_t *config, const char *request_json)
-{
-    http_response_t *response = calloc(1, sizeof(http_response_t));
-    if (!response) {
-        perror("Memory allocation failed");
-        return NULL;
-    }
-
-    char auth_header[256];
-    int header_length = snprintf(auth_header, sizeof(auth_header),
-                                "Authorization: Bearer %s", config->api_key);
-    if (header_length >= (int)sizeof(auth_header)) {
-        fprintf(stderr, "Authorization header truncated\n");
-        SAFE_FREE(response);
-        return NULL;
-    }
-
-    CURLcode curl_status = perform_http_post(config->base_url, auth_header, request_json, response);
-
-    if (curl_status != CURLE_OK) {
-        fprintf(stderr, "HTTP request failed: %s\n", curl_easy_strerror(curl_status));
-        SAFE_FREE(response->payload);
-        SAFE_FREE(response);
-        return NULL;
-    }
-
-    if (response->status_code != 200) {
-        fprintf(stderr, "HTTP error %ld: %s\n", 
-               response->status_code, 
-               response->payload ? response->payload : "No response content");
-        SAFE_FREE(response->payload);
-        SAFE_FREE(response);
-        return NULL;
-    }
-
-    return response;
-}
-
-/**
- * @brief Parse and return the chat response
- * @param http_res Pointer to the HTTP response data container
- * @return Pointer to the parsed chat response structure
- */
-chat_response_t *
-parse_chat_response (const http_response_t *http_res)
-{
-    if (!http_res || !http_res->payload) {
-        fprintf(stderr, "Received empty response\n");
-        return NULL;
-    }
-
-    cJSON *root_object = cJSON_Parse(http_res->payload);
-    if (!root_object) {
-        fprintf(stderr, "JSON parsing failed\n");
-        return NULL;
-    }
-
-    cJSON *error_object = cJSON_GetObjectItem(root_object, "error");
-    if (error_object) {
-        cJSON *error_message = cJSON_GetObjectItem(error_object, "message");
-        fprintf(stderr, "API error: %s\n", 
-               cJSON_IsString(error_message) ? error_message->valuestring : "Unknown error");
-        cJSON_Delete(root_object);
-        return NULL;
-    }
-
-    chat_response_t *parsed_response = calloc(1, sizeof(chat_response_t));
-    if (!parsed_response) {
-        perror("Memory allocation failed");
-        cJSON_Delete(root_object);
-        return NULL;
-    }
-
-    cJSON *choices_array = cJSON_GetObjectItem(root_object, "choices");
-    if (!cJSON_IsArray(choices_array) || cJSON_GetArraySize(choices_array) == 0) {
-        fprintf(stderr, "Invalid choices array\n");
-        goto error;
-    }
-
-    cJSON *first_choice = cJSON_GetArrayItem(choices_array, 0);
-    cJSON *message_object = cJSON_GetObjectItem(first_choice, "message");
-    cJSON *content_object = cJSON_GetObjectItem(message_object, "content");
-    if (!cJSON_IsString(content_object)) {
-        fprintf(stderr, "Invalid content format\n");
-        goto error;
-    }
-
-    parsed_response->content = strdup(content_object->valuestring);
-    if (!parsed_response->content) {
-        perror("String duplication failed");
-        goto error;
-    }
-
-    cJSON *usage_object = cJSON_GetObjectItem(root_object, "usage");
-    if (usage_object) {
-        cJSON *input_tokens = cJSON_GetObjectItem(usage_object, "prompt_tokens");
-        cJSON *output_tokens = cJSON_GetObjectItem(usage_object, "completion_tokens");
-        cJSON *total_tokens = cJSON_GetObjectItem(usage_object, "total_tokens");
-        parsed_response->input_token_count = input_tokens ? input_tokens->valueint : 0;
-        parsed_response->output_token_count = output_tokens ? output_tokens->valueint : 0;
-        parsed_response->total_token_count = total_tokens ? total_tokens->valueint : 0;
-    }
-
-    cJSON_Delete(root_object);
-    return parsed_response;
-
-error:
-    cJSON_Delete(root_object);
-    SAFE_FREE(parsed_response);
-    return NULL;
-}
-
-/*------------------------ Utility functions implementation ------------------------*/
-
-/**
- * @brief Output text to stdout in a streaming fashion
- * @param text_buffer Text buffer
- * @return void
- */
-void
-stream_output (const char *text_buffer)
-{
-    if (!text_buffer) return;
-
-    for (size_t i = 0; text_buffer[i]; ++i) {
-        putchar(text_buffer[i]);
-        fflush(stdout);
-    }
-    putchar('\n');
-}
-
-/**
- * @brief Trim leading and trailing whitespace
- * @param string_buffer String buffer
- * @return void
- */
-void
-trim_whitespace (char *string_buffer)
-{
-    if (!string_buffer) return;
-
-    char *start_ptr = string_buffer;
-    while (isspace((unsigned char)*start_ptr)) start_ptr++;
-    memmove(string_buffer, start_ptr, strlen(start_ptr) + 1);
-
-    char *end_ptr = string_buffer + strlen(string_buffer) - 1;
-    while (end_ptr >= string_buffer && isspace((unsigned char)*end_ptr)) end_ptr--;
-    *(end_ptr + 1) = '\0';
-}
-
-/*------------------------ Command line help info ------------------------*/
 
 /**
  * @brief Print usage instructions
@@ -748,25 +22,7 @@ trim_whitespace (char *string_buffer)
  * @param exit_code Exit code
  * @return void
  */
-static void
-show_usage (const char *program_name, FILE *output_stream, int exit_code)
-{
-    fprintf(output_stream, "Usage: %s [options]... \"<question>\"\n", program_name);
-    fprintf(output_stream, "DeepSeek model command line interface\n\n");
-    fprintf(output_stream, "Options:\n");
-    fprintf(output_stream, "  -p, --print-config        Print current configuration and exit\n");
-    fprintf(output_stream, "  -j, --dry-run             Generate request JSON but do not send\n");
-    fprintf(output_stream, "  -t, --show-tokens         Show token usage statistics\n");
-    fprintf(output_stream, "  -e, --echo                Echo the user's input question\n");
-    fprintf(output_stream, "  -s, --store-forward       Use non-streaming mode\n");
-    fprintf(output_stream, "  -h, --help                Show this help message\n");
-    fprintf(output_stream, "\nExamples:\n");
-    fprintf(output_stream, "  %s -p                     # Show current configuration\n", program_name);
-    fprintf(output_stream, "  %s -j -e \"Your question\"  # Generate request JSON and echo input\n", program_name);
-    exit(exit_code);
-}
-
-/*------------------------ Command line argument parsing ------------------------*/
+static void show_usage (const char *program_name, FILE *output_stream, int exit_code);
 
 /**
  * @brief Parse command-line arguments
@@ -780,54 +36,9 @@ show_usage (const char *program_name, FILE *output_stream, int exit_code)
  * @param user_query User question string
  * @return 0 on success, -1 on failure
  */
-static int
-parse_cli_arguments (int argc, char **argv,
-                     int *print_config, int *show_tokens, int *echo_input,
-                     int *dry_run, int *store_forward, char **user_query)
-{
-    static struct option long_options[] = {
-        {"print-config",  no_argument, NULL, 'p'},
-        {"dry-run",       no_argument, NULL, 'j'},
-        {"show-tokens",   no_argument, NULL, 't'},
-        {"echo",          no_argument, NULL, 'e'},
-        {"store-forward", no_argument, NULL, 's'},
-        {"help",          no_argument, NULL, 'h'},
-        {NULL, 0, NULL, 0}
-    };
-
-    int option;
-    while ((option = getopt_long(argc, argv, "pjtehsh", long_options, NULL)) != -1) {
-        switch (option) {
-        case 'p':
-            *print_config = 1;
-            break;
-        case 'j':
-            *dry_run = 1;
-            break;
-        case 't':
-            *show_tokens = 1;
-            break;
-        case 'e':
-            *echo_input = 1;
-            break;
-        case 's':
-            *store_forward = 1;
-            break;
-        case 'h':
-            show_usage(argv[0], stdout, EXIT_SUCCESS);
-            break;
-        default:
-            show_usage(argv[0], stderr, EXIT_FAILURE);
-        }
-    }
-
-    if (optind >= argc) {
-        fprintf(stderr, "%s: Missing required question parameter\n", argv[0]);
-        show_usage(argv[0], stderr, EXIT_FAILURE);
-    }
-    *user_query = argv[optind];
-    return 0;
-}
+static int parse_cli_arguments (int argc, char **argv,
+                                int *print_config, int *show_tokens, int *echo_input,
+                                int *dry_run, int *store_forward, char **user_query);
 
 /*------------------------ Main program entry point ------------------------*/
 
@@ -953,4 +164,75 @@ main (int argc, char **argv)
     }
 
     return EXIT_SUCCESS;
+}
+
+/*------------------------ Command line help info ------------------------*/
+
+static void 
+show_usage (const char *program_name, FILE *output_stream, int exit_code)
+{
+    fprintf(output_stream, "Usage: %s [options]... \"<question>\"\n", program_name);
+    fprintf(output_stream, "DeepSeek model command line interface\n\n");
+    fprintf(output_stream, "Options:\n");
+    fprintf(output_stream, "  -p, --print-config        Print current configuration and exit\n");
+    fprintf(output_stream, "  -j, --dry-run             Generate request JSON but do not send\n");
+    fprintf(output_stream, "  -t, --show-tokens         Show token usage statistics\n");
+    fprintf(output_stream, "  -e, --echo                Echo the user's input question\n");
+    fprintf(output_stream, "  -s, --store-forward       Use non-streaming mode\n");
+    fprintf(output_stream, "  -h, --help                Show this help message\n");
+    fprintf(output_stream, "\nExamples:\n");
+    fprintf(output_stream, "  %s -p                     # Show current configuration\n", program_name);
+    fprintf(output_stream, "  %s -j -e \"Your question\"  # Generate request JSON and echo input\n", program_name);
+    exit(exit_code);
+}
+
+/*------------------------ Command line argument parsing ------------------------*/
+
+static int
+parse_cli_arguments (int argc, char **argv,
+                     int *print_config, int *show_tokens, int *echo_input,
+                     int *dry_run, int *store_forward, char **user_query)
+{
+    static struct option long_options[] = {
+        {"print-config",  no_argument, NULL, 'p'},
+        {"dry-run",       no_argument, NULL, 'j'},
+        {"show-tokens",   no_argument, NULL, 't'},
+        {"echo",          no_argument, NULL, 'e'},
+        {"store-forward", no_argument, NULL, 's'},
+        {"help",          no_argument, NULL, 'h'},
+        {NULL, 0, NULL, 0}
+    };
+
+    int option;
+    while ((option = getopt_long(argc, argv, "pjtehsh", long_options, NULL)) != -1) {
+        switch (option) {
+        case 'p':
+            *print_config = 1;
+            break;
+        case 'j':
+            *dry_run = 1;
+            break;
+        case 't':
+            *show_tokens = 1;
+            break;
+        case 'e':
+            *echo_input = 1;
+            break;
+        case 's':
+            *store_forward = 1;
+            break;
+        case 'h':
+            show_usage(argv[0], stdout, EXIT_SUCCESS);
+            break;
+        default:
+            show_usage(argv[0], stderr, EXIT_FAILURE);
+        }
+    }
+
+    if (optind >= argc) {
+        fprintf(stderr, "%s: Missing required question parameter\n", argv[0]);
+        show_usage(argv[0], stderr, EXIT_FAILURE);
+    }
+    *user_query = argv[optind];
+    return 0;
 }
