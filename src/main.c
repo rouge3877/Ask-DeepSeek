@@ -65,12 +65,11 @@ static CURLcode http_post(const char *url, const char *auth_header,
 static char *build_request_json(const api_config *config, const chat_params *params);
 
 /* 函数声明 - 工具模块 */
-void stream_print(const char *text, int max_delay);
+void stream_print(const char *text);
 void trim_whitespace(char *str);
 
 /* 辅助宏 */
 #define SAFE_FREE(ptr) do { free(ptr); (ptr) = NULL; } while(0)
-#define MAX_DELAY_MS 500
 
 /*------------------------ 配置模块实现 ------------------------*/
 api_config *config_load(const char *config_path)
@@ -409,17 +408,13 @@ error:
 }
 
 /*------------------------ 工具模块实现 ------------------------*/
-void stream_print(const char *text, int max_delay)
+void stream_print(const char *text)
 {
     if (!text) return;
 
     for (size_t i = 0; text[i]; ++i) {
         putchar(text[i]);
         fflush(stdout);
-        if (max_delay > 0) {
-            useconds_t delay = (useconds_t)(rand() % (max_delay + 1));
-            usleep(delay * 1000);  /* 转换为微秒 */
-        }
     }
     putchar('\n');
 }
@@ -445,7 +440,6 @@ static void usage(const char *progname, FILE *stream, int exit_code)
     fprintf(stream, "Usage: %s [OPTION]... \"<QUESTION>\"\n", progname);
     fprintf(stream, "Command-line interface for DeepSeek LLM API\n\n");
     fprintf(stream, "Options:\n");
-    fprintf(stream, "  -a, --non-animation[=MAX_DELAY]  Disable streaming animation, optionally set max delay(ms)\n");
     fprintf(stream, "  -p, --print-env                 Print current configuration and exit\n");
     fprintf(stream, "  -j, --just-json                 Generate request JSON without sending to API\n");
     fprintf(stream, "  -c, --count-token               Show token usage statistics\n");
@@ -453,18 +447,16 @@ static void usage(const char *progname, FILE *stream, int exit_code)
     fprintf(stream, "  -h, --help                      Display this help and exit\n");
     fprintf(stream, "\nExamples:\n");
     fprintf(stream, "  %s -p                        # Show current config\n", progname);
-    fprintf(stream, "  %s -a 100 \"Hello\"           # Disable animation with 100ms delay\n", progname);
     fprintf(stream, "  %s -j -e \"Your question\"    # Generate JSON and echo input\n", progname);
     exit(exit_code);
 }
 
 /*------------------------ 参数解析 ------------------------*/
-static int parse_arguments(int argc, char **argv, int *max_delay, 
+static int parse_arguments(int argc, char **argv,
                           int *print_env, int *count_token, int *echo, 
                           int *just_json, char **question)
 {
     static struct option long_options[] = {
-        {"non-animation", optional_argument, NULL, 'a'},
         {"print-env",     no_argument,       NULL, 'p'},
         {"just-json",     no_argument,       NULL, 'j'},
         {"count-token",   no_argument,       NULL, 'c'},
@@ -474,21 +466,8 @@ static int parse_arguments(int argc, char **argv, int *max_delay,
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "a::pjc:eh", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "pjc:eh", long_options, NULL)) != -1) {
         switch (opt) {
-        case 'a':
-            if (optarg) {
-                char *endptr;
-                long val = strtol(optarg, &endptr, 10);
-                if (*endptr != '\0' || val < 0 || val > INT_MAX) {
-                    fprintf(stderr, "Invalid delay value: %s\n", optarg);
-                    usage(argv[0], stderr, EXIT_FAILURE);
-                }
-                *max_delay = (int)val;
-            } else {
-                *max_delay = 0;
-            }
-            break;
         case 'p':
             *print_env = 1;
             break;
@@ -526,11 +505,10 @@ int main(int argc, char **argv)
     srand(time(NULL));
 
     /* 解析命令行参数 */
-    int max_delay = MAX_DELAY_MS;
     int print_env = 0, count_token = 0, echo = 0, just_json = 0;
     char *user_question = NULL;
 
-    if (parse_arguments(argc, argv, &max_delay, &print_env, 
+    if (parse_arguments(argc, argv, &print_env, 
                        &count_token, &echo, &just_json, &user_question) != 0) {
         return EXIT_FAILURE;
     }
@@ -602,7 +580,7 @@ int main(int argc, char **argv)
     chat_response *response = parse_chat_response(curl_res);
     if (response && response->content) {
         printf("\nAnswer: ");
-        stream_print(response->content, max_delay);
+        stream_print(response->content);
         
         if (count_token) {
             printf("\nToken Usage:\n  Prompt: %d\n  Completion: %d\n  Total: %d\n",
