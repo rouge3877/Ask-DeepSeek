@@ -55,7 +55,7 @@ SYSTEM_MSG="You are a professional of Computer Science."
 
 ## How to install Ask-DeepSeek?
 
-** Before you install the program, a `.adsenv` file is nascessary. **
+***!!! <u>Before you install the program, a `.adsenv` file is nascessary.</u>***
 
 
 ### Requirements
