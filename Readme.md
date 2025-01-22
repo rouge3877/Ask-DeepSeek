@@ -41,7 +41,7 @@ The program will look for this file in the following locations sequentially:
 1. The current directory: `./.adsenv`
 2. The user's home directory: `~/.adsenv`
 3. The user's configuration directory: `~/.config/.adsenv`
-4. The system-wide configuration directory: `/etc/.adsenv`
+4. The system-wide configuration directory: `/etc/ads/.adsenv`
 
 The elements in the configuration file include `API-KEY`, `BASE_URL`, `MODEL`, `SYSTEM_MSG`. The configuration file looks like this:
 
