@@ -1,5 +1,5 @@
 # private files 
-.adsenv/
+.adsenv
 
 # build files
 build/
