@@ -416,10 +416,10 @@ void stream_print(const char *text, int max_delay)
     for (size_t i = 0; text[i]; ++i) {
         putchar(text[i]);
         fflush(stdout);
-        // if (max_delay > 0) {
-        //     useconds_t delay = (useconds_t)(rand() % (max_delay + 1));
-        //     usleep(delay * 1000);  /* 转换为微秒 */
-        // }
+        if (max_delay > 0) {
+            useconds_t delay = (useconds_t)(rand() % (max_delay + 1));
+            usleep(delay * 1000);  /* 转换为微秒 */
+        }
     }
     putchar('\n');
 }
@@ -439,7 +439,26 @@ void trim_whitespace(char *str)
     *(end + 1) = '\0';
 }
 
-/*------------------------ 主程序 ------------------------*/
+/*------------------------ 帮助信息 ------------------------*/
+static void usage(const char *progname, FILE *stream, int exit_code)
+{
+    fprintf(stream, "Usage: %s [OPTION]... \"<QUESTION>\"\n", progname);
+    fprintf(stream, "Command-line interface for DeepSeek LLM API\n\n");
+    fprintf(stream, "Options:\n");
+    fprintf(stream, "  -a, --non-animation[=MAX_DELAY]  Disable streaming animation, optionally set max delay(ms)\n");
+    fprintf(stream, "  -p, --print-env                 Print current configuration and exit\n");
+    fprintf(stream, "  -j, --just-json                 Generate request JSON without sending to API\n");
+    fprintf(stream, "  -c, --count-token               Show token usage statistics\n");
+    fprintf(stream, "  -e, --echo                      Echo the user's input question\n");
+    fprintf(stream, "  -h, --help                      Display this help and exit\n");
+    fprintf(stream, "\nExamples:\n");
+    fprintf(stream, "  %s -p                        # Show current config\n", progname);
+    fprintf(stream, "  %s -a 100 \"Hello\"           # Disable animation with 100ms delay\n", progname);
+    fprintf(stream, "  %s -j -e \"Your question\"    # Generate JSON and echo input\n", progname);
+    exit(exit_code);
+}
+
+/*------------------------ 参数解析 ------------------------*/
 static int parse_arguments(int argc, char **argv, int *max_delay, 
                           int *print_env, int *count_token, int *echo, 
                           int *just_json, char **question)
@@ -450,11 +469,12 @@ static int parse_arguments(int argc, char **argv, int *max_delay,
         {"just-json",     no_argument,       NULL, 'j'},
         {"count-token",   no_argument,       NULL, 'c'},
         {"echo",          no_argument,       NULL, 'e'},
+        {"help",          no_argument,       NULL, 'h'},
         {NULL, 0, NULL, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "a::pjc:e", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "a::pjc:eh", long_options, NULL)) != -1) {
         switch (opt) {
         case 'a':
             if (optarg) {
@@ -462,7 +482,7 @@ static int parse_arguments(int argc, char **argv, int *max_delay,
                 long val = strtol(optarg, &endptr, 10);
                 if (*endptr != '\0' || val < 0 || val > INT_MAX) {
                     fprintf(stderr, "Invalid delay value: %s\n", optarg);
-                    return -1;
+                    usage(argv[0], stderr, EXIT_FAILURE);
                 }
                 *max_delay = (int)val;
             } else {
@@ -481,20 +501,26 @@ static int parse_arguments(int argc, char **argv, int *max_delay,
         case 'e':
             *echo = 1;
             break;
+        case 'h':
+            usage(argv[0], stdout, EXIT_SUCCESS);
+            break;
+        case '?':
+            usage(argv[0], stderr, EXIT_FAILURE);
+            break;
         default:
-            fprintf(stderr, "Usage: %s [OPTION]... \"<question>\"\n", argv[0]);
-            return -1;
+            usage(argv[0], stderr, EXIT_FAILURE);
         }
     }
 
     if (optind >= argc) {
-        fprintf(stderr, "Missing required question argument\n");
-        return -1;
+        fprintf(stderr, "%s: missing required QUESTION argument\n", argv[0]);
+        usage(argv[0], stderr, EXIT_FAILURE);
     }
     *question = argv[optind];
     return 0;
 }
 
+/*------------------------ 主程序 ------------------------*/
 int main(int argc, char **argv)
 {
     srand(time(NULL));
@@ -590,8 +616,10 @@ int main(int argc, char **argv)
     /* 清理资源 */
     SAFE_FREE(curl_res->memory);
     SAFE_FREE(curl_res);
-    SAFE_FREE(response->content);
-    SAFE_FREE(response);
+    if (response) {
+        SAFE_FREE(response->content);
+        SAFE_FREE(response);
+    }
     config_free(config);
 
     return EXIT_SUCCESS;
