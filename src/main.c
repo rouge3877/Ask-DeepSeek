@@ -74,6 +74,16 @@ typedef struct {
     long status_code;    /**< HTTP状态码 */
 } http_response_t;
 
+/**
+ * @struct stream_context_t
+ * @brief 流式输出处理上下文
+ */
+typedef struct {
+    char buffer[4096];   /**< 数据缓冲区 */
+    size_t buffer_len;   /**< 当前缓冲区长度 */
+    int show_tokens;     /**< 是否显示令牌统计 */
+} stream_context_t;
+
 /*------------------------ 函数声明 ------------------------*/
 
 /* 配置管理模块 */
@@ -84,13 +94,19 @@ void dump_configuration_json(const api_config_t *config);
 
 /* API请求处理模块 */
 http_response_t *execute_chat_request(const api_config_t *config, const char *request_json);
+int execute_streaming_request(const api_config_t *config, const char *request_json, int show_tokens);
 chat_response_t *parse_chat_response(const http_response_t *http_res);
 
 /* HTTP通信模块 */
 static CURLcode perform_http_post(const char *url, const char *auth_header,
                                   const char *payload, http_response_t *response);
 static char *construct_request_json(const api_config_t *config, 
-                                   const chat_request_params_t *params);
+                                   const chat_request_params_t *params,
+                                   int stream);
+
+/* 流式处理模块 */
+static size_t stream_data_callback(char *ptr, size_t size, size_t nmemb, void *userdata);
+static void process_stream_data(stream_context_t *ctx);
 
 /* 工具函数模块 */
 void stream_output(const char *text_buffer);
@@ -101,11 +117,6 @@ void trim_whitespace(char *string_buffer);
 
 /*------------------------ 配置管理模块实现 ------------------------*/
 
-/**
- * @brief 从指定路径加载配置文件
- * @param config_path 配置文件路径
- * @return 成功返回配置结构体指针，失败返回NULL
- */
 api_config_t *load_configuration(const char *config_path)
 {
     FILE *config_file = fopen(config_path, "r");
@@ -120,7 +131,6 @@ api_config_t *load_configuration(const char *config_path)
         return NULL;
     }
 
-    /* 初始化默认配置值 */
     config->model_name = strdup(DEFAULT_MODEL);
     config->system_prompt = strdup(DEFAULT_SYSTEM_PROMPT);
     if (!config->model_name || !config->system_prompt) {
@@ -132,13 +142,11 @@ api_config_t *load_configuration(const char *config_path)
 
     char config_line[256];
     while (fgets(config_line, sizeof(config_line), config_file)) {
-        /* 处理注释和空行 */
         char *comment_start = strchr(config_line, '#');
         if (comment_start) *comment_start = '\0';
         trim_whitespace(config_line);
         if (config_line[0] == '\0') continue;
 
-        /* 解析键值对 */
         char *delimiter = strchr(config_line, '=');
         if (!delimiter) continue;
         *delimiter = '\0';
@@ -148,7 +156,6 @@ api_config_t *load_configuration(const char *config_path)
         trim_whitespace(key);
         trim_whitespace(value);
 
-        /* 动态更新配置字段 */
         char **target_field = NULL;
         if (strcmp(key, "API_KEY") == 0) {
             target_field = &config->api_key;
@@ -168,7 +175,7 @@ api_config_t *load_configuration(const char *config_path)
                 fclose(config_file);
                 return NULL;
             }
-            free(*target_field);  // 释放旧值
+            free(*target_field);
             *target_field = new_value;
         }
     }
@@ -184,10 +191,6 @@ api_config_t *load_configuration(const char *config_path)
     return config;
 }
 
-/**
- * @brief 释放配置结构体占用的内存
- * @param config 要释放的配置结构体指针
- */
 void free_configuration(api_config_t *config)
 {
     if (config) {
@@ -199,17 +202,13 @@ void free_configuration(api_config_t *config)
     }
 }
 
-/**
- * @brief 在标准路径中查找配置文件
- * @return 找到返回有效路径，否则返回NULL
- */
 const char *locate_config_file(void)
 {
     static const char *config_search_paths[] = {
-        "./.adsenv",          // 当前目录
-        NULL,                     // 用户目录
-        NULL,                     // 用户配置目录
-        "/etc/ads/.adsenv"    // 系统级配置
+        "./.adsenv",
+        NULL,
+        NULL,
+        "/etc/ads/.adsenv"
     };
 
     const char *home_dir = getenv("HOME");
@@ -231,10 +230,6 @@ const char *locate_config_file(void)
     return NULL;
 }
 
-/**
- * @brief 以JSON格式打印当前配置信息
- * @param config 配置结构体指针
- */
 void dump_configuration_json(const api_config_t *config)
 {
     cJSON *root_object = cJSON_CreateObject();
@@ -262,9 +257,6 @@ void dump_configuration_json(const api_config_t *config)
 
 /*------------------------ HTTP通信模块实现 ------------------------*/
 
-/**
- * @brief libcurl 写回调函数，用于接收HTTP响应数据
- */
 static size_t curl_data_writer(char *buffer, size_t element_size,
                               size_t element_count, void *user_buffer)
 {
@@ -283,15 +275,6 @@ static size_t curl_data_writer(char *buffer, size_t element_size,
     return data_size;
 }
 
-
-/**
- * @brief 执行HTTP POST请求
- * @param url 目标URL
- * @param auth_header 认证头信息
- * @param payload 请求体数据
- * @param response 响应存储结构体
- * @return libcurl错误码
- */
 static CURLcode perform_http_post(const char *url, const char *auth_header,
                                  const char *payload, http_response_t *response)
 {
@@ -302,12 +285,10 @@ static CURLcode perform_http_post(const char *url, const char *auth_header,
     header_list = curl_slist_append(header_list, "Content-Type: application/json");
     header_list = curl_slist_append(header_list, auth_header);
 
-    /* 设置 CURL 选项时添加显式类型转换 */
     curl_easy_setopt(curl_handle, CURLOPT_URL, url);
     curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, header_list);
     curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, payload);
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, 
-                    (curl_write_callback)curl_data_writer);  // 关键修改点
+    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, curl_data_writer);
     curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, response);
     curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "deepseek-cli/1.0");
     curl_easy_setopt(curl_handle, CURLOPT_TIMEOUT, 30L);
@@ -323,14 +304,9 @@ static CURLcode perform_http_post(const char *url, const char *auth_header,
     return result;
 }
 
-/**
- * @brief 构建API请求的JSON数据
- * @param config 配置参数
- * @param params 聊天请求参数
- * @return 成功返回JSON字符串，失败返回NULL
- */
 static char *construct_request_json(const api_config_t *config,
-                                   const chat_request_params_t *params)
+                                   const chat_request_params_t *params,
+                                   int stream)
 {
     cJSON *root_object = cJSON_CreateObject();
     if (!root_object) return NULL;
@@ -340,7 +316,6 @@ static char *construct_request_json(const api_config_t *config,
     cJSON *message_array = cJSON_AddArrayToObject(root_object, "messages");
     if (!message_array) goto error;
 
-    /* 添加系统提示消息 */
     cJSON *system_message = cJSON_CreateObject();
     if (!cJSON_AddStringToObject(system_message, "role", "system") ||
         !cJSON_AddStringToObject(system_message, "content", 
@@ -350,7 +325,6 @@ static char *construct_request_json(const api_config_t *config,
     }
     cJSON_AddItemToArray(message_array, system_message);
 
-    /* 添加用户查询消息 */
     cJSON *user_message = cJSON_CreateObject();
     if (!cJSON_AddStringToObject(user_message, "role", "user") ||
         !cJSON_AddStringToObject(user_message, "content", params->user_query)) {
@@ -359,8 +333,11 @@ static char *construct_request_json(const api_config_t *config,
     }
     cJSON_AddItemToArray(message_array, user_message);
 
-    /* 禁用流式传输 */
-    if (!cJSON_AddFalseToObject(root_object, "stream")) goto error;
+    if (stream) {
+        if (!cJSON_AddTrueToObject(root_object, "stream")) goto error;
+    } else {
+        if (!cJSON_AddFalseToObject(root_object, "stream")) goto error;
+    }
 
     char *json_output = cJSON_PrintUnformatted(root_object);
     cJSON_Delete(root_object);
@@ -371,14 +348,101 @@ error:
     return NULL;
 }
 
+/*------------------------ 流式处理模块实现 ------------------------*/
+
+static size_t stream_data_callback(char *ptr, size_t size, size_t nmemb, void *userdata)
+{
+    size_t data_size = size * nmemb;
+    stream_context_t *ctx = (stream_context_t *)userdata;
+
+    if (ctx->buffer_len + data_size >= sizeof(ctx->buffer)) {
+        fprintf(stderr, "Stream buffer overflow\n");
+        return 0;
+    }
+
+    memcpy(ctx->buffer + ctx->buffer_len, ptr, data_size);
+    ctx->buffer_len += data_size;
+    ctx->buffer[ctx->buffer_len] = '\0';
+
+    process_stream_data(ctx);
+    return data_size;
+}
+
+static void process_stream_data(stream_context_t *ctx)
+{
+    char *line_start = ctx->buffer;
+    char *line_end;
+
+    while ((line_end = strchr(line_start, '\n')) != NULL) {
+        *line_end = '\0';
+
+        if (strncmp(line_start, "data: ", 6) == 0) {
+            line_start += 6;
+        }
+
+        cJSON *root = cJSON_Parse(line_start);
+        if (root) {
+            cJSON *choices = cJSON_GetObjectItem(root, "choices");
+            if (cJSON_IsArray(choices) && cJSON_GetArraySize(choices) > 0) {
+                cJSON *choice = cJSON_GetArrayItem(choices, 0);
+                cJSON *delta = cJSON_GetObjectItem(choice, "delta");
+                if (delta) {
+                    cJSON *content = cJSON_GetObjectItem(delta, "content");
+                    if (cJSON_IsString(content)) {
+                        printf("%s", content->valuestring);
+                        fflush(stdout);
+                    }
+                }
+            }
+            cJSON_Delete(root);
+        }
+
+        line_start = line_end + 1;
+    }
+
+    size_t remaining = ctx->buffer_len - (line_start - ctx->buffer);
+    memmove(ctx->buffer, line_start, remaining);
+    ctx->buffer_len = remaining;
+    ctx->buffer[remaining] = '\0';
+}
+
+int execute_streaming_request(const api_config_t *config, const char *request_json, int show_tokens)
+{
+    CURL *curl = curl_easy_init();
+    if (!curl) return -1;
+
+    char auth_header[256];
+    snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", config->api_key);
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, auth_header);
+
+    stream_context_t ctx = { .buffer_len = 0, .show_tokens = show_tokens };
+
+    curl_easy_setopt(curl, CURLOPT_URL, config->base_url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request_json);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream_data_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
+
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Request failed: %s\n", curl_easy_strerror(res));
+    }
+
+    /* 流式模式下无法获取完整的usage信息 */
+    if (ctx.show_tokens) {
+        fprintf(stderr, "\nToken usage unavailable in streaming mode\n");
+    }
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    return res == CURLE_OK ? 0 : -1;
+}
+
 /*------------------------ API请求处理模块实现 ------------------------*/
 
-/**
- * @brief 发送聊天请求到API端点
- * @param config 配置参数
- * @param request_json 格式化的JSON请求体
- * @return 成功返回响应结构体，失败返回NULL
- */
 http_response_t *execute_chat_request(const api_config_t *config, const char *request_json)
 {
     http_response_t *response = calloc(1, sizeof(http_response_t));
@@ -417,11 +481,6 @@ http_response_t *execute_chat_request(const api_config_t *config, const char *re
     return response;
 }
 
-/**
- * @brief 解析API响应数据
- * @param http_res HTTP响应结构体
- * @return 成功返回解析后的响应，失败返回NULL
- */
 chat_response_t *parse_chat_response(const http_response_t *http_res)
 {
     if (!http_res || !http_res->payload) {
@@ -435,7 +494,6 @@ chat_response_t *parse_chat_response(const http_response_t *http_res)
         return NULL;
     }
 
-    /* 处理API错误信息 */
     cJSON *error_object = cJSON_GetObjectItem(root_object, "error");
     if (error_object) {
         cJSON *error_message = cJSON_GetObjectItem(error_object, "message");
@@ -452,7 +510,6 @@ chat_response_t *parse_chat_response(const http_response_t *http_res)
         return NULL;
     }
 
-    /* 解析响应内容 */
     cJSON *choices_array = cJSON_GetObjectItem(root_object, "choices");
     if (!cJSON_IsArray(choices_array) || cJSON_GetArraySize(choices_array) == 0) {
         fprintf(stderr, "Invalid choices array\n");
@@ -473,7 +530,6 @@ chat_response_t *parse_chat_response(const http_response_t *http_res)
         goto error;
     }
 
-    /* 解析令牌使用情况 */
     cJSON *usage_object = cJSON_GetObjectItem(root_object, "usage");
     if (usage_object) {
         cJSON *input_tokens = cJSON_GetObjectItem(usage_object, "prompt_tokens");
@@ -495,10 +551,6 @@ error:
 
 /*------------------------ 工具函数模块实现 ------------------------*/
 
-/**
- * @brief 流式输出文本内容
- * @param text_buffer 要输出的文本缓冲区
- */
 void stream_output(const char *text_buffer)
 {
     if (!text_buffer) return;
@@ -510,20 +562,14 @@ void stream_output(const char *text_buffer)
     putchar('\n');
 }
 
-/**
- * @brief 去除字符串首尾的空白字符
- * @param string_buffer 要处理的字符串缓冲区
- */
 void trim_whitespace(char *string_buffer)
 {
     if (!string_buffer) return;
 
-    /* 去除前导空白 */
     char *start_ptr = string_buffer;
     while (isspace((unsigned char)*start_ptr)) start_ptr++;
     memmove(string_buffer, start_ptr, strlen(start_ptr) + 1);
 
-    /* 去除尾部空白 */
     char *end_ptr = string_buffer + strlen(string_buffer) - 1;
     while (end_ptr >= string_buffer && isspace((unsigned char)*end_ptr)) end_ptr--;
     *(end_ptr + 1) = '\0';
@@ -531,12 +577,6 @@ void trim_whitespace(char *string_buffer)
 
 /*------------------------ 命令行帮助信息 ------------------------*/
 
-/**
- * @brief 打印使用帮助信息
- * @param program_name 程序名称
- * @param output_stream 输出流
- * @param exit_code 退出代码
- */
 static void show_usage(const char *program_name, FILE *output_stream, int exit_code)
 {
     fprintf(output_stream, "Usage: %s [options]... \"<question>\"\n", program_name);
@@ -546,6 +586,7 @@ static void show_usage(const char *program_name, FILE *output_stream, int exit_c
     fprintf(output_stream, "  -j, --dry-run             Generate request JSON but do not send\n");
     fprintf(output_stream, "  -t, --show-tokens         Show token usage statistics\n");
     fprintf(output_stream, "  -e, --echo                Echo the user's input question\n");
+    fprintf(output_stream, "  -s, --store-forward       Use non-streaming mode\n");
     fprintf(output_stream, "  -h, --help                Show this help message\n");
     fprintf(output_stream, "\nExamples:\n");
     fprintf(output_stream, "  %s -p                     # Show current configuration\n", program_name);
@@ -555,32 +596,22 @@ static void show_usage(const char *program_name, FILE *output_stream, int exit_c
 
 /*------------------------ 命令行参数解析 ------------------------*/
 
-/**
- * @brief 解析命令行参数
- * @param argc 参数个数
- * @param argv 参数数组
- * @param print_config 输出参数：是否打印配置
- * @param show_tokens 输出参数：是否显示令牌统计
- * @param echo_input 输出参数：是否回显输入
- * @param dry_run 输出参数：是否试运行
- * @param user_query 输出参数：用户查询内容
- * @return 成功返回0，失败返回非零
- */
 static int parse_cli_arguments(int argc, char **argv,
                               int *print_config, int *show_tokens, int *echo_input,
-                              int *dry_run, char **user_query)
+                              int *dry_run, int *store_forward, char **user_query)
 {
     static struct option long_options[] = {
         {"print-config",  no_argument, NULL, 'p'},
         {"dry-run",       no_argument, NULL, 'j'},
         {"show-tokens",   no_argument, NULL, 't'},
         {"echo",          no_argument, NULL, 'e'},
+        {"store-forward", no_argument, NULL, 's'},
         {"help",          no_argument, NULL, 'h'},
         {NULL, 0, NULL, 0}
     };
 
     int option;
-    while ((option = getopt_long(argc, argv, "pjteh", long_options, NULL)) != -1) {
+    while ((option = getopt_long(argc, argv, "pjtehsh", long_options, NULL)) != -1) {
         switch (option) {
         case 'p':
             *print_config = 1;
@@ -593,6 +624,9 @@ static int parse_cli_arguments(int argc, char **argv,
             break;
         case 'e':
             *echo_input = 1;
+            break;
+        case 's':
+            *store_forward = 1;
             break;
         case 'h':
             show_usage(argv[0], stdout, EXIT_SUCCESS);
@@ -616,16 +650,16 @@ int main(int argc, char **argv)
 {
     srand(time(NULL));
 
-    /* 解析命令行参数 */
-    int print_config = 0, show_tokens = 0, echo_input = 0, dry_run = 0;
+    int print_config = 0, show_tokens = 0, echo_input = 0;
+    int dry_run = 0, store_forward = 0;
     char *user_question = NULL;
 
     if (parse_cli_arguments(argc, argv, &print_config, 
-                           &show_tokens, &echo_input, &dry_run, &user_question) != 0) {
+                           &show_tokens, &echo_input, &dry_run, 
+                           &store_forward, &user_question) != 0) {
         return EXIT_FAILURE;
     }
 
-    /* 处理打印配置请求 */
     if (print_config) {
         const char *config_path = locate_config_file();
         if (!config_path) {
@@ -644,7 +678,6 @@ int main(int argc, char **argv)
         return EXIT_SUCCESS;
     }
 
-    /* 加载配置文件 */
     const char *config_path = locate_config_file();
     if (!config_path) {
         fprintf(stderr, "Configuration file not found\n");
@@ -658,25 +691,23 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    /* 回显用户输入 */
     if (echo_input) {
         printf("\nInput: %s\n", user_question);
     }
 
-    /* 构建请求参数 */
     chat_request_params_t request_params = {
         .user_query = user_question,
         .custom_prompt = NULL
     };
 
-    char *request_json = construct_request_json(config, &request_params);
+    int stream_enabled = !store_forward;
+    char *request_json = construct_request_json(config, &request_params, stream_enabled);
     if (!request_json) {
         fprintf(stderr, "Failed to construct request JSON\n");
         free_configuration(config);
         return EXIT_FAILURE;
     }
 
-    /* 试运行模式只输出JSON */
     if (dry_run) {
         printf("%s\n", request_json);
         SAFE_FREE(request_json);
@@ -684,41 +715,50 @@ int main(int argc, char **argv)
         return EXIT_SUCCESS;
     }
 
-    /* 执行API请求 */
-    http_response_t *http_response = execute_chat_request(config, request_json);
-    SAFE_FREE(request_json);
-    if (!http_response) {
-        free_configuration(config);
-        return EXIT_FAILURE;
-    }
-
-    /* 处理API响应 */
-    chat_response_t *chat_response = parse_chat_response(http_response);
-    if (chat_response && chat_response->content) {
-        /* 
-         * output's prompt
-         * printf("\nResponse: "); 
+    if (stream_enabled) {
+        /*
+         * printf("\nStreaming response:\n");
          */
-        stream_output(chat_response->content);
-        
-        if (show_tokens) {
-            printf("\nToken usage:\n  Input: %d\n  Output: %d\n  Total: %d\n",
-                  chat_response->input_token_count, 
-                  chat_response->output_token_count, 
-                  chat_response->total_token_count);
-        }
+        fflush(stdout);
+        int result = execute_streaming_request(config, request_json, show_tokens);
+        printf("\n");
+        SAFE_FREE(request_json);
+        free_configuration(config);
+        return result == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
     } else {
-        fprintf(stderr, "Failed to get valid response\n");
-    }
+        http_response_t *http_response = execute_chat_request(config, request_json);
+        SAFE_FREE(request_json);
+        if (!http_response) {
+            free_configuration(config);
+            return EXIT_FAILURE;
+        }
 
-    /* 资源清理 */
-    SAFE_FREE(http_response->payload);
-    SAFE_FREE(http_response);
-    if (chat_response) {
-        SAFE_FREE(chat_response->content);
-        SAFE_FREE(chat_response);
+        chat_response_t *chat_response = parse_chat_response(http_response);
+        if (chat_response && chat_response->content) {
+            /*
+             * printf("\nStoring response:\n");
+            */
+            printf("%s", chat_response->content);
+            printf("\n");
+            
+            if (show_tokens) {
+                printf("\nToken usage:\n  Input: %d\n  Output: %d\n  Total: %d\n",
+                      chat_response->input_token_count, 
+                      chat_response->output_token_count, 
+                      chat_response->total_token_count);
+            }
+        } else {
+            fprintf(stderr, "Failed to get valid response\n");
+        }
+
+        SAFE_FREE(http_response->payload);
+        SAFE_FREE(http_response);
+        if (chat_response) {
+            SAFE_FREE(chat_response->content);
+            SAFE_FREE(chat_response);
+        }
+        free_configuration(config);
     }
-    free_configuration(config);
 
     return EXIT_SUCCESS;
 }
