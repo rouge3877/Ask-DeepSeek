@@ -695,7 +695,10 @@ int main(int argc, char **argv)
     /* 处理API响应 */
     chat_response_t *chat_response = parse_chat_response(http_response);
     if (chat_response && chat_response->content) {
-        printf("\nResponse: ");
+        /* 
+         * output's prompt
+         * printf("\nResponse: "); 
+         */
         stream_output(chat_response->content);
         
         if (show_tokens) {
