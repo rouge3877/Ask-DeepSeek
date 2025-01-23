@@ -1,11 +1,11 @@
 # Ask DeepSeek ( `ads` )
 
-A cli tool to interact with the [DeepSeek](https://github.com/deepseek-ai/DeepSeek-V3) API.
-It gaves you the ability to interact with the DeepSeek API from the command line.
+`ads` is **A CLI tool** that can interact with [`DeepSeek`](https://github.com/deepseek-ai/DeepSeek-V3).
+It gaves you the ability to interact with `DeepSeek` from the command line.
 
 ## What is Ask-DeepSeek?
 
-Similar with **Jyy**'s `ag` shown in the course "**NJU Operating System**", `ads` is a **command line tool that interacts with `DeepSeek`**. You can use it to ask questions and get answers from the `DeepSeek` in the terminal.
+Similar with **Jyy**'s `ag` (ask gpt) shown in the course "**NJU Operating System**", you can use `ads` to ask questions and get answers with `DeepSeek` in the terminal.
 
 
 ## How to use Ask-DeepSeek?
@@ -34,7 +34,7 @@ Examples:
     ads -j -e "Your question"    # Generate JSON and echo input
 ```
 
-### Configuration (`.adsenv`)
+### <span id="jump1">Configuration (`.adsenv`)</span>
 
 The `adsenv` file is a configuration file that allows you to set the default values for the `ads` command.
 The program will look for this file in the following locations sequentially:
@@ -56,7 +56,7 @@ SYSTEM_MSG="You are a professional of Computer Science."
 ## How to install Ask-DeepSeek?
 
 ***!!! <u>Before you install the program, a `.adsenv` file is nascessary.</u>***
-
+See Section: "[Configuration (`.adsenv`)](#jump1)"
 
 ### Requirements
 
