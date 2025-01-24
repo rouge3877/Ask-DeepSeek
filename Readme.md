@@ -5,7 +5,7 @@ It gaves you the ability to interact with `DeepSeek` from the command line.
 
 ## What is Ask-DeepSeek?
 
-Similar with **Jyy**'s `ag` (ask gpt) shown in the course "**NJU Operating System**", you can use `ads` to ask questions and get answers with `DeepSeek` in the terminal.
+Similar with **Jyy**'s `ag` (**a**sk **g**pt) shown in the course "**NJU Operating System**", you can use `ads` (**a**sk **d**eep**s**eek) to ask questions and get answers with `DeepSeek` in the terminal.
 
 
 ## How to use Ask-DeepSeek?
@@ -146,5 +146,6 @@ You can get the API key by signing up on the [DeepSeek](https://platform.deepsee
 ## TODO
 - [x] Resolve bugs in output animation.
 - [x] Add functionality to use the stream parameter in the API.
-- [ ] Support providing more configurations in the. adsenv file.
+- [ ] Support more configurations in the `.adsenv` file.
+- [ ] Support read question from `stdin`
 - [x] Split a single file in the project into different files to increase readability and maintainability.
