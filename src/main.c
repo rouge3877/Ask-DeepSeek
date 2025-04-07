@@ -3,7 +3,7 @@
  * @brief Ask-DeepSeek CLI main program
  * @note Entry point and command line handling
  * @author Rouge Lin
- * @date 2025-01-23
+ * @date 2025-04-07
  */
 
 #include "config.h"
@@ -14,6 +14,10 @@
 #include <getopt.h>
 #include <stdlib.h>
 #include <time.h>
+#include <string.h>
+
+
+#define MAX_INPUT_SIZE 1024*1024 // 1MB
 
 /**
  * @brief Print usage instructions
@@ -40,6 +44,12 @@ static int parse_cli_arguments (int argc, char **argv,
                                 int *print_config, int *show_tokens, int *echo_input,
                                 int *dry_run, int *store_forward, char **user_query);
 
+/**
+ * @brief Read all content from standard input
+ * @return Dynamically allocated string with stdin content, NULL on failure
+ */
+static char *read_stdin(void);
+
 /*------------------------ Main program entry point ------------------------*/
 
 /**
@@ -56,6 +66,7 @@ main (int argc, char **argv)
     int print_config = 0, show_tokens = 0, echo_input = 0;
     int dry_run = 0, store_forward = 0;
     char *user_question = NULL;
+    char *stdin_input = NULL;
 
     if (parse_cli_arguments(argc, argv, &print_config, 
                            &show_tokens, &echo_input, &dry_run, 
@@ -63,27 +74,41 @@ main (int argc, char **argv)
         return EXIT_FAILURE;
     }
 
+    // if use - , read from stdin
+    if (strcmp(user_question, "-") == 0) {
+        stdin_input = read_stdin();
+        if (!stdin_input) {
+            fprintf(stderr, "Failed to read from standard input\n");
+            return EXIT_FAILURE;
+        }
+        user_question = stdin_input;
+    }
+
     if (print_config) {
         const char *config_path = locate_config_file();
         if (!config_path) {
             fprintf(stderr, "Configuration file not found\n");
+            SAFE_FREE(stdin_input);
             return EXIT_FAILURE;
         }
 
         api_config_t *config = load_configuration(config_path);
         if (!config) {
             fprintf(stderr, "Failed to load configuration\n");
+            SAFE_FREE(stdin_input);
             return EXIT_FAILURE;
         }
 
         dump_configuration_json(config);
         free_configuration(config);
+        SAFE_FREE(stdin_input);
         return EXIT_SUCCESS;
     }
 
     const char *config_path = locate_config_file();
     if (!config_path) {
         fprintf(stderr, "Configuration file not found\n");
+        SAFE_FREE(stdin_input);
         return EXIT_FAILURE;
     }
 
@@ -91,6 +116,7 @@ main (int argc, char **argv)
     if (!config || !config->api_key || !config->base_url) {
         fprintf(stderr, "Invalid configuration parameters\n");
         free_configuration(config);
+        SAFE_FREE(stdin_input);
         return EXIT_FAILURE;
     }
 
@@ -108,6 +134,7 @@ main (int argc, char **argv)
     if (!request_json) {
         fprintf(stderr, "Failed to construct request JSON\n");
         free_configuration(config);
+        SAFE_FREE(stdin_input);
         return EXIT_FAILURE;
     }
 
@@ -115,32 +142,29 @@ main (int argc, char **argv)
         printf("%s\n", request_json);
         SAFE_FREE(request_json);
         free_configuration(config);
+        SAFE_FREE(stdin_input);
         return EXIT_SUCCESS;
     }
 
     if (stream_enabled) {
-        /*
-         * printf("\nStreaming response:\n");
-         */
         fflush(stdout);
         int result = execute_streaming_request(config, request_json, show_tokens);
         printf("\n");
         SAFE_FREE(request_json);
         free_configuration(config);
+        SAFE_FREE(stdin_input);
         return result == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
     } else {
         http_response_t *http_response = execute_chat_request(config, request_json);
         SAFE_FREE(request_json);
         if (!http_response) {
             free_configuration(config);
+            SAFE_FREE(stdin_input);
             return EXIT_FAILURE;
         }
 
         chat_response_t *chat_response = parse_chat_response(http_response);
         if (chat_response && chat_response->content) {
-            /*
-             * printf("\nStoring response:\n");
-            */
             printf("%s", chat_response->content);
             printf("\n");
             
@@ -161,6 +185,7 @@ main (int argc, char **argv)
             SAFE_FREE(chat_response);
         }
         free_configuration(config);
+        SAFE_FREE(stdin_input);
     }
 
     return EXIT_SUCCESS;
@@ -183,6 +208,7 @@ show_usage (const char *program_name, FILE *output_stream, int exit_code)
     fprintf(output_stream, "\nExamples:\n");
     fprintf(output_stream, "  %s -p                     # Show current configuration\n", program_name);
     fprintf(output_stream, "  %s -j -e \"Your question\"  # Generate request JSON and echo input\n", program_name);
+    fprintf(output_stream, "  %s - < input.txt          # Read question from standard input\n", program_name);
     exit(exit_code);
 }
 
@@ -235,4 +261,42 @@ parse_cli_arguments (int argc, char **argv,
     }
     *user_query = argv[optind];
     return 0;
+}
+
+/*------------------------ Read from standard input ------------------------*/
+
+static char *
+read_stdin (void)
+{
+    size_t capacity = MAX_INPUT_SIZE;
+    size_t size = 0;
+    char *buffer = malloc(capacity);
+    if (!buffer) return NULL;
+
+    while (1) {
+        size_t bytes_read = fread(buffer + size, 1, capacity - size, stdin);
+        size += bytes_read;
+
+        if (bytes_read < capacity - size) {
+            if (feof(stdin)) {
+                break;
+            } else {
+                free(buffer);
+                return NULL;
+            }
+        }
+
+        if (size == capacity) {
+            capacity *= 2;
+            char *temp = realloc(buffer, capacity);
+            if (!temp) {
+                free(buffer);
+                return NULL;
+            }
+            buffer = temp;
+        }
+    }
+
+    buffer[size] = '\0';
+    return buffer;
 }
